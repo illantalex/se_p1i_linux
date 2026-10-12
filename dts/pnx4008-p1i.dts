@@ -80,6 +80,17 @@
 			clock-frequency = <13000000>;
 		};
 
+		/*
+		 * HCLK (AHB), clocks the I2C blocks. Verified from the stub's dump: HCLKPLL_CTRL
+		 * 0x0001601f (direct mode, M = 16: 13 MHz * 16 = 208 MHz), HCLKDIV_CTRL 0x3d
+		 * (HCLK = PLL / 2, PERIPH_CLK = PLL / 16 = 13 MHz).
+		 */
+		hclk: hclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <104000000>;
+		};
+
 		xtal_32k: xtal-32k {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
@@ -170,6 +181,38 @@
 			interrupts = <10 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&periph_clk>;
 			status = "okay";
+		};
+
+		/*
+		 * I2C1/I2C2 (Philips IP3204, drivers/i2c/busses/i2c-pnx.c). Symbian leaves their
+		 * clocks off; the payload stub turns them on (I2CCLK_CTRL bits 0-1). Interrupts
+		 * are the LPC32xx ones, verified: the stub's TX-FIFO-not-full test raised SIC1
+		 * line 19 for I2C1 (active low), and I2C2 works on line 18.
+		 * I2C1 is the camera bus (MV9319 ISP, camera connector X2741); its pull-ups go to
+		 * VORG_CAM1.8, which is off unless CAM_POW (GPO_21) is high, so the bus reads low.
+		 * I2C2 has the STCF03 flash LED driver (0x30) and the STMPE801 GPIO expander
+		 * (0x41); the SI4703 FM tuner is on it too but only answers once powered up.
+		 */
+		i2c1: i2c@400a0000 {
+			compatible = "nxp,pnx-i2c";
+			reg = <0x400a0000 0x100>;
+			interrupt-parent = <&sic1>;
+			interrupts = <19 IRQ_TYPE_LEVEL_LOW>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&hclk>;
+			clock-frequency = <100000>;
+		};
+
+		i2c2: i2c@400a8000 {
+			compatible = "nxp,pnx-i2c";
+			reg = <0x400a8000 0x100>;
+			interrupt-parent = <&sic1>;
+			interrupts = <18 IRQ_TYPE_LEVEL_LOW>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&hclk>;
+			clock-frequency = <100000>;
 		};
 
 		/*
