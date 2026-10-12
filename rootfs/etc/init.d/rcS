@@ -1,0 +1,12 @@
+#!/bin/sh
+# Early userspace for the P1i initramfs.
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /tmp
+
+hostname p1i
+
+echo
+echo "P1i: userspace up on $(uname -sr), $(cut -d' ' -f1 /proc/uptime)s after boot"

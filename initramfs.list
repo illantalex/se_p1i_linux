@@ -1,0 +1,5 @@
+# Extra initramfs entries that cannot live in rootfs/ without root privileges
+# (gen_init_cpio format, merged with rootfs/ via CONFIG_INITRAMFS_SOURCE).
+# /dev/console must exist before devtmpfs is mounted, or init has no stdin/stdout.
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1

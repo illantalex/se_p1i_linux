@@ -1,0 +1,45 @@
+#!/bin/sh
+# build.sh -- build the Sony Ericsson P1i Linux image: build/zImage-p1i (zImage + DTB) with a
+# static BusyBox initramfs built in. Copy the result to ../linux_handover/baremetal/ (or
+# wherever the handover project lives) to make the phone payload p1i_linux.bin.
+#
+# Needs: arm-none-eabi-gcc (kernel), arm-linux-gnueabi-gcc (BusyBox, armel glibc), and the
+# kernel tree in linux/ on branch p1i.
+set -e
+
+TOP=$(cd "$(dirname "$0")" && pwd)
+JOBS=$(nproc)
+BB_VER=1.37.0
+BB_SHA256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+BB="$TOP/busybox-$BB_VER"
+BB_MAKE="make -C $BB CROSS_COMPILE=arm-linux-gnueabi-"
+K_MAKE="make -C $TOP/linux O=$TOP/build ARCH=arm CROSS_COMPILE=arm-none-eabi-"
+
+echo "=== BusyBox $BB_VER"
+cd "$TOP"
+if [ ! -d "$BB" ]; then
+	[ -f busybox-$BB_VER.tar.bz2 ] ||
+		curl -fL -o busybox-$BB_VER.tar.bz2 https://busybox.net/downloads/busybox-$BB_VER.tar.bz2
+	echo "$BB_SHA256  busybox-$BB_VER.tar.bz2" | sha256sum -c -
+	tar xjf busybox-$BB_VER.tar.bz2
+fi
+# Copy only on change, so an unchanged config does not force a rebuild.
+cmp -s busybox.config "$BB/.config" || cp busybox.config "$BB/.config"
+$BB_MAKE oldconfig </dev/null >/dev/null
+$BB_MAKE -j"$JOBS"
+$BB_MAKE CONFIG_PREFIX="$TOP/rootfs" install >/dev/null
+mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/tmp rootfs/root
+ln -sfn bin/busybox rootfs/init
+
+echo "=== Kernel"
+# dts/ is the copy that gets edited; keep the kernel tree's copy (committed on p1i) in step.
+if ! cmp -s dts/pnx4008-p1i.dts linux/arch/arm/boot/dts/pnx4008-p1i.dts; then
+	cp dts/pnx4008-p1i.dts linux/arch/arm/boot/dts/pnx4008-p1i.dts
+	echo "NOTE: copied dts/pnx4008-p1i.dts into linux/ -- commit it there too"
+fi
+# Everything not in p1i.config is off; CONFIG_INITRAMFS_SOURCE in it is relative to build/.
+$K_MAKE KCONFIG_ALLCONFIG="$TOP/p1i.config" allnoconfig >/dev/null
+$K_MAKE -j"$JOBS" zImage dtbs
+cat build/arch/arm/boot/zImage build/arch/arm/boot/dts/pnx4008-p1i.dtb > build/zImage-p1i
+
+echo "=== Done: $TOP/build/zImage-p1i ($(stat -c %s build/zImage-p1i) bytes)"

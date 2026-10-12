@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Sony Ericsson P1i -- NXP (Philips) Nexperia PNX4008, ARM926EJ-S r0p4 @ 208 MHz,
+ * 32 KB I + 32 KB D cache, 128 MB SDRAM at 0x80000000.
+ *
+ * Bring-up DTS: just enough for the decompressor and early boot to talk on UART5
+ * (SP2663, 115200 8N1). The handover payload has already set UART5's clock and
+ * divisor, so the console works without any clock driver.
+ *
+ * Built on the LPC32xx layout (the PNX4008's successor, same peripheral map) but NOT on
+ * lpc32xx.dtsi: the root compatible deliberately avoids "nxp,lpc32x0", so the generic
+ * DT machine is used instead of mach-lpc32xx, whose init code reprograms UART clocks.
+ *
+ * Verified on the device (regprobe, then uart5probe): UART3-6 bases, MIC/SIC1/SIC2 bases and register
+ * layout, clock block at 0x40004000, watchdog at 0x4003c000, UART5 @ 13 MHz / 16 / 7.
+ * Verified by the payload stub's register dump: MSTIM on MIC line 27, level high; MIC
+ * polarity/type Symbian left (POL 3b3b0ce0, TYPE 0) agrees with every trigger below.
+ * NOT yet verified: the other interrupt numbers (taken from LPC32xx), RAM hole position.
+ *
+ * Build inside a kernel tree: copy to arch/arm/boot/dts/ (arch/arm/boot/dts/nxp/lpc/ on
+ * >= 6.5) and run  make ARCH=arm CROSS_COMPILE=arm-none-eabi- pnx4008-p1i.dtb
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	model = "Sony Ericsson P1i";
+	compatible = "sonyericsson,p1i", "nxp,pnx4008";
+	interrupt-parent = <&mic>;
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	aliases {
+		serial0 = &uart6;	/* -> ttyS0: console + shell (IrDA module pads, TX and RX) */
+		serial1 = &uart5;	/* -> ttyS1: no longer wired (kept for a future modem) */
+	};
+
+	chosen {
+		/*
+		 * No baud on earlycon: with one it reprograms the divisor assuming a 1.8432 MHz
+		 * clock (divisor 1 here, ~812 kbaud). Without one it keeps the payload's setting.
+		 */
+		/*
+		 * Console on UART6 only: the 8250 driver has a single console, and with two
+		 * console= ttyS entries the first port to probe (UART5) takes it.
+		 */
+		bootargs = "earlycon=uart8250,mmio32,0x40098000 console=ttyS0,115200n8 ignore_loglevel";
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * HAL reports 0x7b00000 (123 MB) of 128 MB usable; the missing 5 MB is presumably
+	 * framebuffer / modem memory. Assumed at the top (0x87b00000-0x87ffffff) because
+	 * Symbian's own page tables live low (TTBR 0x80504000). Confirm against the probe's
+	 * RamBootData dump before trusting it; a wrong guess here corrupts memory silently.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x07b00000>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			compatible = "arm,arm926ej-s";
+			device_type = "cpu";
+			reg = <0x0>;
+		};
+	};
+
+	clocks {
+		/* PERIPH_CLK: 13 MHz, confirmed by UART5 at divisor 7 -> 116071 baud. */
+		periph_clk: periph-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <13000000>;
+		};
+
+		xtal_32k: xtal-32k {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+		};
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x40000000 0x40000000 0x10000000>;
+
+		/* Main interrupt controller; register layout ER RSR SR APR ATR ITR (probe). */
+		mic: interrupt-controller@40008000 {
+			compatible = "nxp,lpc3220-mic";
+			reg = <0x40008000 0x4000>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+
+		sic1: interrupt-controller@4000c000 {
+			compatible = "nxp,lpc3220-sic";
+			reg = <0x4000c000 0x4000>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupt-parent = <&mic>;
+			interrupts = <0 IRQ_TYPE_LEVEL_LOW>, <30 IRQ_TYPE_LEVEL_LOW>;
+		};
+
+		sic2: interrupt-controller@40010000 {
+			compatible = "nxp,lpc3220-sic";
+			reg = <0x40010000 0x4000>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupt-parent = <&mic>;
+			interrupts = <1 IRQ_TYPE_LEVEL_LOW>, <31 IRQ_TYPE_LEVEL_LOW>;
+		};
+
+		/*
+		 * Standard 16550-style UARTs, 32-bit registers on a 4-byte stride.
+		 * MIC lines are NOT the LPC32xx ones: the stub's THRE test put UART5 on line 9
+		 * and UART6 on line 10, both level high (verified). UART3/4 at 7/8 assume the
+		 * same shift and are unverified.
+		 */
+		uart3: serial@40080000 {
+			compatible = "nxp,lpc3220-uart", "ns16550a";
+			reg = <0x40080000 0x1000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			interrupts = <7 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&periph_clk>;
+			status = "disabled";	/* in use by Symbian's side of the board */
+		};
+
+		uart4: serial@40088000 {
+			compatible = "nxp,lpc3220-uart", "ns16550a";
+			reg = <0x40088000 0x1000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			interrupts = <8 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&periph_clk>;
+			status = "disabled";
+		};
+
+		uart5: serial@40090000 {
+			compatible = "nxp,lpc3220-uart", "ns16550a";
+			reg = <0x40090000 0x1000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			interrupts = <9 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&periph_clk>;
+			status = "okay";
+		};
+
+		/*
+		 * UART6 is the IrDA UART; the payload stub sets UART_CTRL bit 5 (IrDA modulator
+		 * bypass) and its clocks, so it works as a plain 16550. Wired via the removed
+		 * IrDA module H2660: pin 2 RXD = U6_IRRX, pin 3 TxD = U6_IRTX; RX pull-up R2677.
+		 * Symbian left UART_CTRL at 0x20e (IrDA mode, pulse shaping, TX mirror invert,
+		 * half duplex); the stub clears those and sets the bypass.
+		 */
+		uart6: serial@40098000 {
+			compatible = "nxp,lpc3220-uart", "ns16550a";
+			reg = <0x40098000 0x1000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			interrupts = <10 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&periph_clk>;
+			status = "okay";
+		};
+
+		/*
+		 * drivers/watchdog/pnx4008_wdt.c: provides the restart handler (reboot) and
+		 * /dev/watchdog. It only starts counting when /dev/watchdog is opened; the
+		 * payload stub stops it at handover. Its clock (TIMCLK_CTRL bit 0) was already
+		 * on under Symbian; the driver assumes the fixed 13 MHz PERIPH_CLK.
+		 */
+		watchdog@4003c000 {
+			compatible = "nxp,pnx4008-wdt";
+			reg = <0x4003c000 0x1000>;
+			clocks = <&periph_clk>;
+		};
+
+		/*
+		 * Millisecond timer: 32-bit counter on the 32.768 kHz RTC clock, Symbian's tick,
+		 * so already running at handover. Clocksource + clockevent (match 0).
+		 * Line 27 verified on the device: clearing MSTIM_INT drops MIC RAW bit 27
+		 * (0cc4a308 -> 04c4a308); Symbian had it enabled with POL=1, TYPE=0 (level high).
+		 * Symbian ran it the same way: CTRL 5 (count + debug pause), MCTRL 1 (match 0
+		 * interrupt, no reset).
+		 * HSTIM (0x40038000) is the finer-grained alternative, but its clock is gated off
+		 * under Symbian (TIMCLK_CTRL 0x400040bc bit 1).
+		 */
+		timer@40034000 {
+			compatible = "nxp,pnx4008-mstim";
+			reg = <0x40034000 0x1000>;
+			interrupts = <27 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal_32k>;
+		};
+	};
+};
