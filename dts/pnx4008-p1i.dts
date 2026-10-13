@@ -23,6 +23,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 
@@ -96,6 +97,36 @@
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
 			clock-frequency = <32768>;
+		};
+	};
+
+	/*
+	 * Display and keypad backlights (sheet BCT1DE). BACKLIGHT_LEVEL (PWM_OUT2) dims both;
+	 * with the PWM disabled its pin is low and both are dark. GPO_09 NUM_BACKLIGHT_EN and
+	 * GPO_10 QWERTY_BACKLIGHT_EN, verified on the device:
+	 *   9/10 = 0/0 all off, 1/0 or 0/1 display + keypad, 1/1 display only.
+	 * So GPO_10 is held high (hog in the gpio node) and GPO_09 (active low) is the keypad
+	 * LED; display on/off is the PWM alone, which darkens everything when disabled,
+	 * whatever GPO_09 is. GPO_10 is deliberately not the backlight's enable-gpios:
+	 * pwm-backlight toggles it while the PWM still runs, and the transient 1/0 state
+	 * flashes the keypad. Keypad brightness follows the display's.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm2 0 7812500 0>;	/* 32768 Hz / 256 = 128 Hz, as Symbian */
+		/* Below ~15% duty the boost converter gives no visible light. */
+		brightness-levels = <0 40 64 96 128 160 192 224 255>;
+		default-brightness-level = <6>;	/* 75%, near Symbian's 73% */
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led-keypad {
+			function = LED_FUNCTION_KBD_BACKLIGHT;
+			color = <LED_COLOR_ID_WHITE>;
+			gpios = <&gpio 5 9 GPIO_ACTIVE_LOW>;
+			default-state = "off";
 		};
 	};
 
@@ -259,6 +290,27 @@
 			reg = <0x40028000 0x1000>;
 			gpio-controller;
 			#gpio-cells = <3>;
+
+			/* Backlight enable, see the backlight node. */
+			qwerty-backlight-en-hog {
+				gpio-hog;
+				gpios = <5 10 GPIO_ACTIVE_HIGH>;
+				output-high;
+				line-name = "QWERTY_BACKLIGHT_EN";
+			};
+		};
+
+		/*
+		 * PWM2 = BACKLIGHT_LEVEL, LPC32xx layout (drivers/pwm/pwm-lpc32xx.c), verified:
+		 * Symbian left 0x80000145 (enabled, reload 1, duty reg 0x45 = low 69/256) and
+		 * PWMCLK_CTRL 0x104 (PWM2 clock on, 32 kHz source, divider 1). The driver does
+		 * not touch PWMCLK_CTRL. Higher duty = brighter; disabled = dark.
+		 */
+		pwm2: pwm@4005c004 {
+			compatible = "nxp,lpc3220-pwm";
+			reg = <0x4005c004 0x4>;
+			clocks = <&xtal_32k>;
+			#pwm-cells = <3>;
 		};
 
 		/*
