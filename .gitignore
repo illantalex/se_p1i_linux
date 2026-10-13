@@ -11,3 +11,6 @@
 /rootfs/usr/
 /rootfs/linuxrc
 /rootfs/init
+/libgpiod-*/
+/libgpiod-*.tar.xz
+/gpiod-*.log
