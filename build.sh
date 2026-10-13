@@ -34,7 +34,7 @@ $BB_MAKE CONFIG_PREFIX="$TOP/rootfs" install >/dev/null
 mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/tmp rootfs/root
 ln -sfn bin/busybox rootfs/init
 
-echo "=== libgpiod $GPIOD_VER tools"
+echo "=== libgpiod $GPIOD_VER tools + memdump"
 if [ ! -d "$GPIOD" ]; then
 	[ -f libgpiod-$GPIOD_VER.tar.xz ] ||
 		curl -fL -o libgpiod-$GPIOD_VER.tar.xz \
@@ -55,11 +55,13 @@ for t in $GPIOD_TOOLS; do
 		"$GPIOD/tools/$t.o" "$GPIOD/tools/$t-multi.o"
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"
 done
+# memdump.c (own /dev/mem dumper) shares the binary the same way.
+arm-linux-gnueabi-gcc -O2 -Wall -c -Dmain=memdump_main -o "$GPIOD/tools/memdump-multi.o" memdump.c
 arm-linux-gnueabi-gcc -O2 -static -s -o "$GPIOD/tools/gpiod-multi" gpiod-multi.c $OBJS \
-	"$GPIOD/tools/tools-common.o" "$GPIOD/lib/.libs/libgpiod.a"
+	"$GPIOD/tools/memdump-multi.o" "$GPIOD/tools/tools-common.o" "$GPIOD/lib/.libs/libgpiod.a"
 mkdir -p rootfs/usr/bin
 cp "$GPIOD/tools/gpiod-multi" rootfs/usr/bin/gpiod-multi
-for t in $GPIOD_TOOLS; do
+for t in $GPIOD_TOOLS memdump; do
 	ln -sfn gpiod-multi rootfs/usr/bin/$t
 done
 
