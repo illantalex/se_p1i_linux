@@ -1,5 +1,7 @@
 # BusyBox init: bring the system up, then keep a root shell on the UART5 console.
 ::sysinit:/etc/init.d/rcS
 ttyS0::respawn:-/bin/sh
+# Second shell on the display, typed on the keypad
+tty1::respawn:-/bin/sh
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
