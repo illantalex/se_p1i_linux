@@ -60,9 +60,9 @@ for t in $GPIOD_TOOLS; do
 		"$GPIOD/tools/$t.o" "$GPIOD/tools/$t-multi.o"
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"
 done
-# Own small tools (memdump.c: /dev/mem dumper, evdump.c: input event viewer) share the
-# binary the same way.
-OWN_TOOLS="memdump evdump"
+# Own small tools (memdump.c: /dev/mem dumper, evdump.c: input event viewer, p1ikbd.c:
+# keypad-to-console daemon) share the binary the same way.
+OWN_TOOLS="memdump evdump p1ikbd"
 for t in $OWN_TOOLS; do
 	arm-linux-gnueabi-gcc -O2 -Wall -c -Dmain=${t}_main -o "$GPIOD/tools/$t-multi.o" $t.c
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"

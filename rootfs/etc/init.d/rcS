@@ -8,5 +8,8 @@ mount -t tmpfs tmpfs /tmp
 
 hostname p1i
 
+# Keypad to console with Symbian-style Shift/Alt and the symbols printed on the keys
+p1ikbd
+
 echo
 echo "P1i: userspace up on $(uname -sr), $(cut -d' ' -f1 /proc/uptime)s after boot"

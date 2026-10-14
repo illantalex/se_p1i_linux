@@ -13,7 +13,7 @@ here. No reflashing; `reboot` returns to Symbian.
 | | |
 |---|---|
 | Display | framebuffer console (240x320, 30x20 text), Symbian's display setup kept (`simple-framebuffer`) |
-| Keypad | full QWERTZ keyboard, side keys, camera key, jog dial (Up/Down/Enter); shell on `tty1` |
+| Keypad | full QWERTZ keyboard, side keys, camera key, jog dial (Up/Down/Enter); shell on `tty1` typed through `p1ikbd` (below) |
 | Backlights | display (PWM, 8 levels) and keypad; camera-flash LED as a torch (STCF03) |
 | Core | interrupts (MIC/SIC1/SIC2), tickless MSTIM clocksource/clockevent, watchdog reboot |
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
@@ -34,7 +34,7 @@ panel itself, so it relies on starting from Symbian.
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
 | `rootfs/` | `inittab` (shells on `ttyS0` and `tty1`), `rcS`, `root/regdump.sh` |
 | `initramfs.list` | Initramfs entries that need root to create (`/dev/console`) |
-| `gpiod-multi.c`, `memdump.c`, `evdump.c` | One static multi-call binary: libgpiod tools, a `/dev/mem` dumper, an input-event viewer |
+| `gpiod-multi.c`, `memdump.c`, `evdump.c`, `p1ikbd.c` | One static multi-call binary: libgpiod tools, a `/dev/mem` dumper, an input-event viewer, the keypad daemon |
 | `capture.sh` | Runs a command on the phone's serial shell and saves the output on the PC |
 | `build.sh` | Builds everything into `build/zImage-p1i` |
 
@@ -46,6 +46,22 @@ Kernel patches, in short:
   `ARCH_LPC32XX` itself does not boot here);
 - fixes: `pwm-lpc32xx` NULL dereference at probe, `stmpe-i2c` without an interrupt;
 - `arch/arm/boot/dts/pnx4008-p1i.dts`.
+
+## Typing on the keypad
+
+`p1ikbd` (started by `rcS`) turns the keypad into console input the way Symbian does:
+
+| Key | Gives |
+|---|---|
+| Shift, Alt | apply to the next key; twice = Caps / Alt lock; a third press unlocks |
+| Alt + key | the symbol or red digit printed on the key (`@ / : ? ( ) ' + - ! * #`, `1`-`9`, Space = `0`) |
+| `.` | tapped again within a second, cycles through `, ? ! _ \ \| ~ `` ` `` ^ & % $ " ; = < > [ ] { } # * @ / : ' ( ) + -` |
+| Back | Ctrl-C; Shift + Back = Ctrl-D |
+| Shift, then Alt | Ctrl for the next key (e.g. Ctrl-Z) |
+| `@` side key | Tab |
+| arrows, jog dial | cursor keys; jog press = Enter |
+
+It grabs the input devices, so stop it (`killall p1ikbd`) before using `evdump`.
 
 ## Building
 
