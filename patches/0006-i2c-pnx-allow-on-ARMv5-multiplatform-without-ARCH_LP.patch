@@ -1,0 +1,34 @@
+From ec16ff0647100448785e1f9caddc65cf77811e0f Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 00:18:08 +0200
+Subject: [PATCH 06/17] i2c: pnx: allow on ARMv5 multiplatform without
+ ARCH_LPC32XX
+
+The PNX4008 has the same IP3204 I2C controllers the driver was written
+for, but a PNX4008 board on the generic DT machine cannot enable
+ARCH_LPC32XX. Allow the driver for ARCH_MULTI_V5 as well.
+
+Tested on a Sony Ericsson P1i: i2cdetect finds the STCF03 (0x30) and
+STMPE801 (0x41) on I2C2.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
+index e50f9603d..a935a604b 100644
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -917,7 +917,7 @@ config I2C_PCA_PLATFORM
+ 
+ config I2C_PNX
+ 	tristate "I2C bus support for Philips PNX and NXP LPC targets"
+-	depends on ARCH_LPC32XX || COMPILE_TEST
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST
+ 	help
+ 	  This driver supports the Philips IP3204 I2C IP block master and/or
+ 	  slave controller
+-- 
+2.53.0
+

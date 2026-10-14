@@ -1,0 +1,82 @@
+From aaff4660b9470ae09404e8125a5636de535fed33 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 00:18:09 +0200
+Subject: [PATCH 07/17] ARM: dts: pnx4008-p1i: add HCLK and the I2C controllers
+
+Add a fixed 104 MHz HCLK (read back from HCLKPLL_CTRL/HCLKDIV_CTRL on
+the device: 208 MHz PLL / 2) and the two I2C controllers at 100 kHz on
+SIC1 lines 19 and 18, verified on the device.
+
+I2C1 is the camera bus; its pull-ups are on VORG_CAM1.8, which is only
+powered while CAM_POW (GPO_21) is high, so it reads as stuck low until
+the camera supply is switched on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 43 +++++++++++++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index b7cc77f57..10283f035 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -80,6 +80,17 @@ periph_clk: periph-clk {
+ 			clock-frequency = <13000000>;
+ 		};
+ 
++		/*
++		 * HCLK (AHB), clocks the I2C blocks. Verified from the stub's dump: HCLKPLL_CTRL
++		 * 0x0001601f (direct mode, M = 16: 13 MHz * 16 = 208 MHz), HCLKDIV_CTRL 0x3d
++		 * (HCLK = PLL / 2, PERIPH_CLK = PLL / 16 = 13 MHz).
++		 */
++		hclk: hclk {
++			compatible = "fixed-clock";
++			#clock-cells = <0>;
++			clock-frequency = <104000000>;
++		};
++
+ 		xtal_32k: xtal-32k {
+ 			compatible = "fixed-clock";
+ 			#clock-cells = <0>;
+@@ -172,6 +183,38 @@ uart6: serial@40098000 {
+ 			status = "okay";
+ 		};
+ 
++		/*
++		 * I2C1/I2C2 (Philips IP3204, drivers/i2c/busses/i2c-pnx.c). Symbian leaves their
++		 * clocks off; the payload stub turns them on (I2CCLK_CTRL bits 0-1). Interrupts
++		 * are the LPC32xx ones, verified: the stub's TX-FIFO-not-full test raised SIC1
++		 * line 19 for I2C1 (active low), and I2C2 works on line 18.
++		 * I2C1 is the camera bus (MV9319 ISP, camera connector X2741); its pull-ups go to
++		 * VORG_CAM1.8, which is off unless CAM_POW (GPO_21) is high, so the bus reads low.
++		 * I2C2 has the STCF03 flash LED driver (0x30) and the STMPE801 GPIO expander
++		 * (0x41); the SI4703 FM tuner is on it too but only answers once powered up.
++		 */
++		i2c1: i2c@400a0000 {
++			compatible = "nxp,pnx-i2c";
++			reg = <0x400a0000 0x100>;
++			interrupt-parent = <&sic1>;
++			interrupts = <19 IRQ_TYPE_LEVEL_LOW>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			clocks = <&hclk>;
++			clock-frequency = <100000>;
++		};
++
++		i2c2: i2c@400a8000 {
++			compatible = "nxp,pnx-i2c";
++			reg = <0x400a8000 0x100>;
++			interrupt-parent = <&sic1>;
++			interrupts = <18 IRQ_TYPE_LEVEL_LOW>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			clocks = <&hclk>;
++			clock-frequency = <100000>;
++		};
++
+ 		/*
+ 		 * drivers/watchdog/pnx4008_wdt.c: provides the restart handler (reboot) and
+ 		 * /dev/watchdog. It only starts counting when /dev/watchdog is opened; the
+-- 
+2.53.0
+

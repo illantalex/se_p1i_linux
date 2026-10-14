@@ -1,0 +1,175 @@
+From 9572d4082e41e47e6268a6b2c2d60f6556ffdaa1 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 19:32:40 +0200
+Subject: [PATCH 10/17] leds: add ST STCF03 flash LED driver (torch mode)
+
+The STCF03 is an I2C-controlled buck-boost camera flash LED driver.
+Flash mode needs its TRIG input, which on the Sony Ericsson P1i is
+driven by the camera ISP, so this driver only exposes torch mode as an
+LED class device: brightness 1..16 selects the 16 torch current steps,
+0 switches the chip off. It is also switched off at probe and shutdown.
+
+Which nibble of DIM_REG holds the torch level could not be settled by
+testing, so the level is written to both; the other one is the flash
+level, which has no effect while flash mode is never enabled.
+
+Tested on a Sony Ericsson P1i.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/leds/Kconfig       |  11 ++++
+ drivers/leds/Makefile      |   1 +
+ drivers/leds/leds-stcf03.c | 107 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 119 insertions(+)
+ create mode 100644 drivers/leds/leds-stcf03.c
+
+diff --git a/drivers/leds/Kconfig b/drivers/leds/Kconfig
+index 499d0f215..b649cc01e 100644
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -348,6 +348,17 @@ config LEDS_LP3944
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called leds-lp3944.
+ 
++config LEDS_STCF03
++	tristate "LED Support for the ST STCF03 flash LED driver (torch mode)"
++	depends on LEDS_CLASS
++	depends on I2C
++	help
++	  This option enables the torch mode of the STMicroelectronics STCF03
++	  camera flash LED driver, as found in the Sony Ericsson P1i.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called leds-stcf03.
++
+ config LEDS_LP3952
+ 	tristate "LED Support for TI LP3952 2 channel LED driver"
+ 	depends on LEDS_CLASS
+diff --git a/drivers/leds/Makefile b/drivers/leds/Makefile
+index 4fd2f92cd..2e111c6ed 100644
+--- a/drivers/leds/Makefile
++++ b/drivers/leds/Makefile
+@@ -44,6 +44,7 @@ obj-$(CONFIG_LEDS_LM3692X)		+= leds-lm3692x.o
+ obj-$(CONFIG_LEDS_LM3697)		+= leds-lm3697.o
+ obj-$(CONFIG_LEDS_LOCOMO)		+= leds-locomo.o
+ obj-$(CONFIG_LEDS_LP3944)		+= leds-lp3944.o
++obj-$(CONFIG_LEDS_STCF03)		+= leds-stcf03.o
+ obj-$(CONFIG_LEDS_LP3952)		+= leds-lp3952.o
+ obj-$(CONFIG_LEDS_LP50XX)		+= leds-lp50xx.o
+ obj-$(CONFIG_LEDS_LP5521)		+= leds-lp5521.o
+diff --git a/drivers/leds/leds-stcf03.c b/drivers/leds/leds-stcf03.c
+new file mode 100644
+index 000000000..ee13e55b6
+--- /dev/null
++++ b/drivers/leds/leds-stcf03.c
+@@ -0,0 +1,107 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ST STCF03 camera flash LED driver, torch mode only.
++ *
++ * Flash mode also needs the chip's TRIG input, which on the Sony Ericsson P1i is driven
++ * by the camera ISP, so only the I2C-controlled torch is exposed: brightness 1..16 maps
++ * to the 16 torch current steps (exponential, up to 25% of the flash current), 0 is off.
++ *
++ * Registers: CMD 0x00 (PWR_ON bit 7, TRIG_EN 6, TCH_ON 5, NTC_ON 4, FTIM 3:0),
++ * DIM 0x01 (TDIM torch current and FDIM flash current, one nibble each), AUX 0x02,
++ * STAT 0x03.
++ */
++
++#include <linux/bits.h>
++#include <linux/i2c.h>
++#include <linux/leds.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++
++#define STCF03_CMD		0x00
++#define STCF03_CMD_PWR_ON	BIT(7)
++#define STCF03_CMD_TCH_ON	BIT(5)
++#define STCF03_DIM		0x01
++#define STCF03_TORCH_LEVELS	16
++
++struct stcf03 {
++	struct i2c_client *client;
++	struct led_classdev cdev;
++};
++
++static int stcf03_brightness_set(struct led_classdev *cdev, enum led_brightness value)
++{
++	struct stcf03 *stcf03 = container_of(cdev, struct stcf03, cdev);
++	struct i2c_client *client = stcf03->client;
++	int ret;
++
++	if (value == LED_OFF)
++		return i2c_smbus_write_byte_data(client, STCF03_CMD, 0);
++
++	/*
++	 * Tests on the P1i did not settle which nibble of DIM is TDIM, so write the level to
++	 * both. The other one is FDIM, which has no effect: flash mode is never enabled.
++	 */
++	ret = i2c_smbus_write_byte_data(client, STCF03_DIM, (value - 1) * 0x11);
++	if (ret)
++		return ret;
++
++	return i2c_smbus_write_byte_data(client, STCF03_CMD,
++					 STCF03_CMD_PWR_ON | STCF03_CMD_TCH_ON);
++}
++
++static int stcf03_probe(struct i2c_client *client)
++{
++	struct led_init_data init_data = {
++		.fwnode = dev_fwnode(&client->dev),
++		.default_label = "torch",
++	};
++	struct stcf03 *stcf03;
++	int ret;
++
++	stcf03 = devm_kzalloc(&client->dev, sizeof(*stcf03), GFP_KERNEL);
++	if (!stcf03)
++		return -ENOMEM;
++
++	stcf03->client = client;
++	stcf03->cdev.max_brightness = STCF03_TORCH_LEVELS;
++	stcf03->cdev.brightness_set_blocking = stcf03_brightness_set;
++
++	/* Start switched off; this also checks the chip answers. */
++	ret = i2c_smbus_write_byte_data(client, STCF03_CMD, 0);
++	if (ret)
++		return dev_err_probe(&client->dev, ret, "no response\n");
++
++	i2c_set_clientdata(client, stcf03);
++	return devm_led_classdev_register_ext(&client->dev, &stcf03->cdev, &init_data);
++}
++
++static void stcf03_shutdown(struct i2c_client *client)
++{
++	i2c_smbus_write_byte_data(client, STCF03_CMD, 0);
++}
++
++static const struct of_device_id stcf03_of_match[] = {
++	{ .compatible = "st,stcf03" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, stcf03_of_match);
++
++static const struct i2c_device_id stcf03_id[] = {
++	{ "stcf03" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, stcf03_id);
++
++static struct i2c_driver stcf03_driver = {
++	.driver = {
++		.name = "leds-stcf03",
++		.of_match_table = stcf03_of_match,
++	},
++	.probe_new = stcf03_probe,
++	.shutdown = stcf03_shutdown,
++	.id_table = stcf03_id,
++};
++module_i2c_driver(stcf03_driver);
++
++MODULE_DESCRIPTION("ST STCF03 flash LED driver (torch mode)");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

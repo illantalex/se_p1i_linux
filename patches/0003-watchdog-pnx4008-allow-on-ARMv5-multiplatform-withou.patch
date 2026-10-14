@@ -1,0 +1,35 @@
+From e47706f7610ace9514e4375a1a3f05e1324fdd43 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 12 Oct 2026 23:40:31 +0200
+Subject: [PATCH 03/17] watchdog: pnx4008: allow on ARMv5 multiplatform without
+ ARCH_LPC32XX
+
+The driver matches "nxp,pnx4008-wdt" and also provides the restart
+handler, but could only be selected with ARCH_LPC32XX, which a PNX4008
+board on the generic DT machine cannot enable. Allow it for
+ARCH_MULTI_V5 as well.
+
+Tested on a Sony Ericsson P1i: "reboot" resets the SoC through the
+watchdog.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/watchdog/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/watchdog/Kconfig b/drivers/watchdog/Kconfig
+index b64bc49c7..e9f2efbb1 100644
+--- a/drivers/watchdog/Kconfig
++++ b/drivers/watchdog/Kconfig
+@@ -554,7 +554,7 @@ config OMAP_WATCHDOG
+ 
+ config PNX4008_WATCHDOG
+ 	tristate "LPC32XX Watchdog"
+-	depends on ARCH_LPC32XX || COMPILE_TEST
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST
+ 	select WATCHDOG_CORE
+ 	help
+ 	  Say Y here if to include support for the watchdog timer
+-- 
+2.53.0
+

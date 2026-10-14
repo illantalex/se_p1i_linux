@@ -4,7 +4,10 @@
 # wherever the handover project lives) to make the phone payload p1i_linux.bin.
 #
 # Needs: arm-none-eabi-gcc (kernel), arm-linux-gnueabi-gcc (BusyBox and libgpiod, armel
-# glibc), and the kernel tree in linux/ on branch p1i.
+# glibc). The kernel tree is linux/: if it is missing, Linux 6.1.2 is downloaded and the
+# patches in patches/ are applied with git am (branch p1i). After committing kernel
+# changes there, refresh the series with
+#   rm patches/*.patch && git -C linux format-patch -o ../patches v6.1.2..p1i
 set -e
 
 TOP=$(cd "$(dirname "$0")" && pwd)
@@ -15,6 +18,8 @@ BB="$TOP/busybox-$BB_VER"
 GPIOD_VER=2.2.5
 GPIOD_SHA256=0df1bb2be89d9091a167b9f702f8f31d89863e8d84997aad09ee4aba12fe78c5
 GPIOD="$TOP/libgpiod-$GPIOD_VER"
+K_VER=6.1.2
+K_SHA256=ee41f3c4f599b2f46f08aae428c9243db403e7292eb2c9f04ee34909b038d1ae
 BB_MAKE="make -C $BB CROSS_COMPILE=arm-linux-gnueabi-"
 K_MAKE="make -C $TOP/linux O=$TOP/build ARCH=arm CROSS_COMPILE=arm-none-eabi-"
 
@@ -71,6 +76,20 @@ for t in $GPIOD_TOOLS $OWN_TOOLS; do
 done
 
 echo "=== Kernel"
+cd "$TOP"
+if [ ! -d linux ]; then
+	echo "linux/ missing: fetching Linux $K_VER and applying patches/"
+	[ -f linux-$K_VER.tar.xz ] ||
+		curl -fL -o linux-$K_VER.tar.xz \
+			https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$K_VER.tar.xz
+	echo "$K_SHA256  linux-$K_VER.tar.xz" | sha256sum -c -
+	tar xJf linux-$K_VER.tar.xz
+	mv linux-$K_VER linux
+	(cd linux && git init -q && git add -A &&
+	 git -c user.name=build -c user.email=build@localhost commit -q -m "Linux $K_VER" &&
+	 git tag v$K_VER && git checkout -q -b p1i &&
+	 git -c user.name=build -c user.email=build@localhost am -q ../patches/*.patch)
+fi
 # dts/ is the copy that gets edited; keep the kernel tree's copy (committed on p1i) in step.
 if ! cmp -s dts/pnx4008-p1i.dts linux/arch/arm/boot/dts/pnx4008-p1i.dts; then
 	cp dts/pnx4008-p1i.dts linux/arch/arm/boot/dts/pnx4008-p1i.dts

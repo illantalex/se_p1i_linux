@@ -1,0 +1,69 @@
+From b3ed89493b9ea252ba49669532fb0a905f206698 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 14 Oct 2026 21:19:16 +0200
+Subject: [PATCH 17/17] ARM: dts: pnx4008-p1i: display via simple-framebuffer
+
+Symbian leaves the DUM (Display Update Module) and the Sony panel running
+at handover, refreshing the panel from its framebuffer at 0x81000000 with
+dirty detection. Reserve that memory and describe it as a 240x320
+x8r8g8b8 simple-framebuffer (1024-byte stride, DUM PAD_1024). Kernel
+console on tty0 as well as the UART.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 32 ++++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index fda2a32cb..0f430965c 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -49,7 +49,7 @@ chosen {
+ 		 * Console on UART6 only: the 8250 driver has a single console, and with two
+ 		 * console= ttyS entries the first port to probe (UART5) takes it.
+ 		 */
+-		bootargs = "earlycon=uart8250,mmio32,0x40098000 console=ttyS0,115200n8 ignore_loglevel";
++		bootargs = "earlycon=uart8250,mmio32,0x40098000 console=tty0 console=ttyS0,115200n8 ignore_loglevel";
+ 		stdout-path = "serial0:115200n8";
+ 	};
+ 
+@@ -64,6 +64,36 @@ memory@80000000 {
+ 		reg = <0x80000000 0x07b00000>;
+ 	};
+ 
++	reserved-memory {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		/* Symbian's framebuffer, still scanned out by the DUM after handover. */
++		framebuffer_mem: framebuffer@81000000 {
++			reg = <0x81000000 0x50000>;
++			no-map;
++		};
++	};
++
++	/*
++	 * Display: Symbian leaves the DUM (Display Update Module, 0x400B8000 channels,
++	 * 0x400BC000 main) and the Sony panel configured. DUM_DECODE = 0x01000000, i.e.
++	 * the framebuffer at 0x81000000; 32 channels of 0x2800 bytes each cover 320 lines of
++	 * 1024 bytes = 240 pixels x 4 bytes, padded (DUM PAD_1024, RGB888 in 32 bits). The DUM
++	 * refreshes the panel by itself on writes (channel CONF 0xa026: dirty detection +
++	 * sync), so a plain simple-framebuffer works. Verified on the device: orientation,
++	 * stride and x8r8g8b8 colours (solid R/G/B/W fills) are right.
++	 */
++	framebuffer@81000000 {
++		compatible = "simple-framebuffer";
++		reg = <0x81000000 0x50000>;
++		width = <240>;
++		height = <320>;
++		stride = <1024>;
++		format = "x8r8g8b8";
++	};
++
+ 	cpus {
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+-- 
+2.53.0
+

@@ -1,0 +1,36 @@
+From d87c47c12a42ca354f7765b99f89881894ceb999 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 19:32:39 +0200
+Subject: [PATCH 09/17] mfd: stmpe-i2c: treat a missing interrupt as no-irq
+ mode
+
+The I2C core reports a client without an interrupt as irq 0, but the
+stmpe core only switches to its no-irq variant (which the STMPE801 has)
+when the irq is negative. With 0 it goes on to request irq 0 and the
+probe fails, so an STMPE801 whose INT pin is not connected could not be
+used from DT. Pass -1 when the client has no interrupt.
+
+Tested on a Sony Ericsson P1i (STMPE801 at 0x41, INT not connected).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mfd/stmpe-i2c.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mfd/stmpe-i2c.c b/drivers/mfd/stmpe-i2c.c
+index 4d55494a9..09837b1c6 100644
+--- a/drivers/mfd/stmpe-i2c.c
++++ b/drivers/mfd/stmpe-i2c.c
+@@ -73,7 +73,8 @@ stmpe_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
+ 	const struct of_device_id *of_id;
+ 
+ 	i2c_ci.data = (void *)id;
+-	i2c_ci.irq = i2c->irq;
++	/* The I2C core reports "no interrupt" as 0; the stmpe core expects < 0. */
++	i2c_ci.irq = i2c->irq > 0 ? i2c->irq : -1;
+ 	i2c_ci.client = i2c;
+ 	i2c_ci.dev = &i2c->dev;
+ 
+-- 
+2.53.0
+

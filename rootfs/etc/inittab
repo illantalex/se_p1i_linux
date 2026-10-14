@@ -1,4 +1,4 @@
-# BusyBox init: bring the system up, then keep a root shell on the UART5 console.
+# BusyBox init: bring the system up, then keep root shells on the UART6 console and the display.
 ::sysinit:/etc/init.d/rcS
 ttyS0::respawn:-/bin/sh
 # Second shell on the display, typed on the keypad

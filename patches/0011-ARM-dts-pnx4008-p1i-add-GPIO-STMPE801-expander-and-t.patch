@@ -1,0 +1,84 @@
+From 858e7558300c3b07e4f72e219a4e0fe036b1424a Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 19:32:40 +0200
+Subject: [PATCH 11/17] ARM: dts: pnx4008-p1i: add GPIO, STMPE801 expander and
+ torch LED
+
+- GPIO block (LPC32xx layout); GPO_21 is CAM_POW, GPO_11 CAM_RST#.
+- STMPE801 GPIO expander at 0x41 on I2C2 in no-irq mode (INT not
+  connected), with line names from the schematic: WLAN_POW, FM_RST#,
+  KNATTE3_CTRL1/2_INT, IR_SHDN#.
+- STCF03 at 0x30 on I2C2 as the white:torch LED.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 46 +++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 10283f035..9d1455a30 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -24,6 +24,7 @@
+ /dts-v1/;
+ 
+ #include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/leds/common.h>
+ 
+ / {
+ 	model = "Sony Ericsson P1i";
+@@ -213,6 +214,51 @@ i2c2: i2c@400a8000 {
+ 			#size-cells = <0>;
+ 			clocks = <&hclk>;
+ 			clock-frequency = <100000>;
++
++			/*
++			 * STCF03 camera flash LED driver (power sheet), torch mode only: its TRIG
++			 * input comes from the camera ISP. Verified by hand with i2cset: CMD 0xa0
++			 * (PWR_ON | TCH_ON) lights the torch; the torch level is one nibble of
++			 * DIM (the driver writes both).
++			 */
++			led-controller@30 {
++				compatible = "st,stcf03";
++				reg = <0x30>;
++				color = <LED_COLOR_ID_WHITE>;
++				function = LED_FUNCTION_TORCH;
++			};
++
++			/*
++			 * STMPE801 "Expander 1" (N5509, audio sheet): ADDRESS tied low, RESET =
++			 * USB_RST#, INT not connected, so it runs in the driver's no-irq mode.
++			 */
++			gpio-expander@41 {
++				compatible = "st,stmpe801";
++				reg = <0x41>;
++
++				stmpe_gpio: gpio {
++					compatible = "st,stmpe-gpio";
++					gpio-controller;
++					#gpio-cells = <2>;
++					/* GPIO_0..2 are tied together and pulled down: unused. */
++					gpio-line-names = "", "", "", "WLAN_POW", "FM_RST#",
++							  "KNATTE3_CTRL1_INT", "KNATTE3_CTRL2_INT",
++							  "IR_SHDN#";
++				};
++			};
++		};
++
++		/*
++		 * GPIO block, LPC32xx layout (drivers/gpio/gpio-lpc32xx.c). Cells: bank, pin,
++		 * flags; banks 0-2 = P0-P2 (LPC32xx only, unverified here), 3 = GPIO_P3,
++		 * 4 = GPI_P3 inputs, 5 = GPO_P3 outputs. Verified: GPO_n is bit n of
++		 * P3_OUTP_SET/CLR/STATE (GPO_21 = CAM_POW, GPO_11 = CAM_RST#).
++		 */
++		gpio: gpio@40028000 {
++			compatible = "nxp,lpc3220-gpio";
++			reg = <0x40028000 0x1000>;
++			gpio-controller;
++			#gpio-cells = <3>;
+ 		};
+ 
+ 		/*
+-- 
+2.53.0
+

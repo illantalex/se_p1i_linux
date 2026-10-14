@@ -1,0 +1,177 @@
+From dacdc27bae76d41a38fe27ec25a5cca67f36294e Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 14 Oct 2026 20:47:34 +0200
+Subject: [PATCH 15/17] Input: add jog dial driver (interrupt + direction
+ lines)
+
+The Sony Ericsson P1i jog dial is a quadrature pair resting high; each
+detent pulls both contacts low in an order that gives the direction. One
+falling-edge interrupt on the INT line plus the DIR level at that moment
+identifies the step, reported as one of two keys. The interrupt is taken
+from the interrupt controller directly, since the SoC's GPIO driver
+cannot map pins to interrupts and the controller has no both-edge mode.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/misc/Kconfig    |  11 ++++
+ drivers/input/misc/Makefile   |   1 +
+ drivers/input/misc/jog-dial.c | 113 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 125 insertions(+)
+ create mode 100644 drivers/input/misc/jog-dial.c
+
+diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
+index fa9426516..d2348bc2c 100644
+--- a/drivers/input/misc/Kconfig
++++ b/drivers/input/misc/Kconfig
+@@ -383,6 +383,17 @@ config INPUT_KEYSPAN_REMOTE
+ 	  To compile this driver as a module, choose M here: the module will
+ 	  be called keyspan_remote.
+ 
++config INPUT_JOG_DIAL
++	tristate "Jog dial with interrupt and direction lines"
++	depends on GPIOLIB && OF
++	help
++	  Say Y here for the jog dial of the Sony Ericsson P1i: a quadrature
++	  pair read as one edge interrupt plus a direction GPIO, reported as
++	  two keys.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called jog-dial.
++
+ config INPUT_KXTJ9
+ 	tristate "Kionix KXTJ9 tri-axis digital accelerometer"
+ 	depends on I2C
+diff --git a/drivers/input/misc/Makefile b/drivers/input/misc/Makefile
+index 6abefc410..4fac3bee4 100644
+--- a/drivers/input/misc/Makefile
++++ b/drivers/input/misc/Makefile
+@@ -47,6 +47,7 @@ obj-$(CONFIG_INPUT_IQS269A)		+= iqs269a.o
+ obj-$(CONFIG_INPUT_IQS626A)		+= iqs626a.o
+ obj-$(CONFIG_INPUT_IQS7222)		+= iqs7222.o
+ obj-$(CONFIG_INPUT_KEYSPAN_REMOTE)	+= keyspan_remote.o
++obj-$(CONFIG_INPUT_JOG_DIAL)		+= jog-dial.o
+ obj-$(CONFIG_INPUT_KXTJ9)		+= kxtj9.o
+ obj-$(CONFIG_INPUT_M68K_BEEP)		+= m68kspkr.o
+ obj-$(CONFIG_INPUT_MAX77650_ONKEY)	+= max77650-onkey.o
+diff --git a/drivers/input/misc/jog-dial.c b/drivers/input/misc/jog-dial.c
+new file mode 100644
+index 000000000..55d611151
+--- /dev/null
++++ b/drivers/input/misc/jog-dial.c
+@@ -0,0 +1,113 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Jog dial with an "interrupt" and a "direction" line (Sony Ericsson P1i).
++ *
++ * The two contacts are a quadrature pair that rests high; every detent pulls both low and
++ * releases them again, and the order gives the direction. So one falling-edge interrupt
++ * on the INT line is enough: if DIR is already low at that moment the dial turned one
++ * way, if it is still high the other way. Each detent is reported as a press and release
++ * of one of two keys ("linux,codes": DIR low, DIR high).
++ *
++ * The interrupt comes from the interrupt controller directly ("interrupts"), as the GPIO
++ * controller on this SoC cannot map its pins to interrupts.
++ */
++
++#include <linux/gpio/consumer.h>
++#include <linux/input.h>
++#include <linux/interrupt.h>
++#include <linux/ktime.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++
++/* Edges closer together than this are contact bounce. */
++#define JOG_DIAL_DEBOUNCE_US	2000
++
++struct jog_dial {
++	struct input_dev *input;
++	struct gpio_desc *dir;
++	u32 codes[2];
++	ktime_t last;
++};
++
++static irqreturn_t jog_dial_irq(int irq, void *data)
++{
++	struct jog_dial *jog = data;
++	ktime_t now = ktime_get();
++	unsigned int code;
++	int dir;
++
++	if (ktime_us_delta(now, jog->last) < JOG_DIAL_DEBOUNCE_US)
++		return IRQ_HANDLED;
++	jog->last = now;
++
++	dir = gpiod_get_value(jog->dir);
++	if (dir < 0)
++		return IRQ_HANDLED;
++
++	code = jog->codes[dir ? 1 : 0];
++	input_report_key(jog->input, code, 1);
++	input_sync(jog->input);
++	input_report_key(jog->input, code, 0);
++	input_sync(jog->input);
++
++	return IRQ_HANDLED;
++}
++
++static int jog_dial_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct jog_dial *jog;
++	int irq, ret;
++
++	jog = devm_kzalloc(dev, sizeof(*jog), GFP_KERNEL);
++	if (!jog)
++		return -ENOMEM;
++
++	jog->dir = devm_gpiod_get(dev, "dir", GPIOD_IN);
++	if (IS_ERR(jog->dir))
++		return dev_err_probe(dev, PTR_ERR(jog->dir), "no dir GPIO\n");
++
++	ret = device_property_read_u32_array(dev, "linux,codes", jog->codes, 2);
++	if (ret)
++		return dev_err_probe(dev, ret, "linux,codes needs two key codes\n");
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++
++	jog->input = devm_input_allocate_device(dev);
++	if (!jog->input)
++		return -ENOMEM;
++
++	jog->input->name = "jog-dial";
++	jog->input->phys = "jog-dial/input0";
++	input_set_capability(jog->input, EV_KEY, jog->codes[0]);
++	input_set_capability(jog->input, EV_KEY, jog->codes[1]);
++
++	ret = input_register_device(jog->input);
++	if (ret)
++		return ret;
++
++	/* Trigger type (falling edge) comes from the "interrupts" property. */
++	return devm_request_irq(dev, irq, jog_dial_irq, 0, "jog-dial", jog);
++}
++
++static const struct of_device_id jog_dial_of_match[] = {
++	{ .compatible = "sonyericsson,jog-dial" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, jog_dial_of_match);
++
++static struct platform_driver jog_dial_driver = {
++	.probe = jog_dial_probe,
++	.driver = {
++		.name = "jog-dial",
++		.of_match_table = jog_dial_of_match,
++	},
++};
++module_platform_driver(jog_dial_driver);
++
++MODULE_DESCRIPTION("Jog dial with interrupt and direction lines");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

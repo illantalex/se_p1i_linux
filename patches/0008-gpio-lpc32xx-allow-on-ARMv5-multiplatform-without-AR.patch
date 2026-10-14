@@ -1,0 +1,35 @@
+From 131c9bb9366a7d5857c519792871cb89401fa2c4 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 19:32:39 +0200
+Subject: [PATCH 08/17] gpio: lpc32xx: allow on ARMv5 multiplatform without
+ ARCH_LPC32XX
+
+The PNX4008 has the same GPIO block (P3 GPIO/GPI/GPO banks at the same
+offsets), but a PNX4008 board on the generic DT machine cannot enable
+ARCH_LPC32XX. Allow the driver for ARCH_MULTI_V5 as well; it only
+registers its chips at probe and writes no registers.
+
+Tested on a Sony Ericsson P1i: GPO_21 (CAM_POW) is bit 21 of
+P3_OUTP_SET/CLR/STATE, as on the LPC32xx.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpio/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+index a01af1180..4cc058e9e 100644
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -392,7 +392,7 @@ config GPIO_LPC18XX
+ 
+ config GPIO_LPC32XX
+ 	tristate "NXP LPC32XX GPIO support"
+-	depends on OF_GPIO && (ARCH_LPC32XX || COMPILE_TEST)
++	depends on OF_GPIO && (ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST)
+ 	help
+ 	  Select this option to enable GPIO driver for
+ 	  NXP LPC32XX devices.
+-- 
+2.53.0
+

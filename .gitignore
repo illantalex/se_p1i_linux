@@ -13,6 +13,7 @@
 /rootfs/init
 /libgpiod-*/
 /libgpiod-*.tar.xz
+/linux-*.tar.xz
 /gpiod-*.log
 # Reference sources fetched from old kernels (not ours)
 /ref/

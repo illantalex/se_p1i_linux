@@ -1,0 +1,58 @@
+From 3692b2de07c518231b698a0e056d0e506d6e2438 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 13 Oct 2026 20:27:16 +0200
+Subject: [PATCH 12/17] pwm: lpc32xx: fix NULL dereference in probe, allow on
+ ARMv5 multiplatform
+
+The probe reads chip.pwms[0].hwpwm to clear PWM_PIN_LEVEL, but chip.pwms
+is only allocated by pwmchip_add(), so it oopses at offset 8. The chip has
+a single channel at offset 0, so use the register directly (as mainline
+later did).
+
+The PNX4008 has the same PWM block at 0x4005c000/4, verified on the Sony
+Ericsson P1i (PWM2 drives the display and keypad backlight), so let the
+driver build on ARCH_MULTI_V5 without ARCH_LPC32XX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pwm/Kconfig       | 2 +-
+ drivers/pwm/pwm-lpc32xx.c | 9 ++++++---
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/pwm/Kconfig b/drivers/pwm/Kconfig
+index 60d13a949..8c5110d33 100644
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -327,7 +327,7 @@ config PWM_LPC18XX_SCT
+ 
+ config PWM_LPC32XX
+ 	tristate "LPC32XX PWM support"
+-	depends on ARCH_LPC32XX || COMPILE_TEST
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST
+ 	depends on HAS_IOMEM
+ 	help
+ 	  Generic PWM framework driver for LPC32XX. The LPC32XX SOC has two
+diff --git a/drivers/pwm/pwm-lpc32xx.c b/drivers/pwm/pwm-lpc32xx.c
+index 86a0ea0f6..302d589be 100644
+--- a/drivers/pwm/pwm-lpc32xx.c
++++ b/drivers/pwm/pwm-lpc32xx.c
+@@ -140,10 +140,13 @@ static int lpc32xx_pwm_probe(struct platform_device *pdev)
+ 	lpc32xx->chip.ops = &lpc32xx_pwm_ops;
+ 	lpc32xx->chip.npwm = 1;
+ 
+-	/* If PWM is disabled, configure the output to the default value */
+-	val = readl(lpc32xx->base + (lpc32xx->chip.pwms[0].hwpwm << 2));
++	/*
++	 * If PWM is disabled, configure the output to the default value. chip.pwms is only
++	 * allocated by pwmchip_add(), so use the one channel's register directly.
++	 */
++	val = readl(lpc32xx->base);
+ 	val &= ~PWM_PIN_LEVEL;
+-	writel(val, lpc32xx->base + (lpc32xx->chip.pwms[0].hwpwm << 2));
++	writel(val, lpc32xx->base);
+ 
+ 	ret = devm_pwmchip_add(&pdev->dev, &lpc32xx->chip);
+ 	if (ret < 0) {
+-- 
+2.53.0
+

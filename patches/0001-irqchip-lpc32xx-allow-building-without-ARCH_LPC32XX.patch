@@ -1,0 +1,59 @@
+From 3e6ca3e4f8e1100e4e78035c3b40c90d423653e2 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 12 Oct 2026 23:40:30 +0200
+Subject: [PATCH 01/17] irqchip: lpc32xx: allow building without ARCH_LPC32XX
+
+The PNX4008 (LPC32xx predecessor) has the same MIC/SIC interrupt
+controllers, but a PNX4008 board cannot enable ARCH_LPC32XX: the
+mach-lpc32xx arch_initcalls (lpc32xx_check_uid, lpc32xx_pm_init) run
+unconditionally and access the static IO_ADDRESS mapping, which only
+exists when the LPC32xx machine's map_io ran, so the kernel oopses on
+the generic DT machine.
+
+Add LPC32XX_IRQCHIP, defaulting to ARCH_LPC32XX so LPC32xx builds are
+unchanged, and selectable on its own for boards using the generic DT
+machine.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/irqchip/Kconfig  | 10 ++++++++++
+ drivers/irqchip/Makefile |  2 +-
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index 7ef9f5e69..5419feb3c 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -188,6 +188,16 @@ config CLPS711X_IRQCHIP
+ 	select SPARSE_IRQ
+ 	default y
+ 
++config LPC32XX_IRQCHIP
++	bool "NXP LPC32xx / PNX4008 MIC/SIC interrupt controller" if !ARCH_LPC32XX
++	depends on ARM && OF
++	select IRQ_DOMAIN
++	default ARCH_LPC32XX
++	help
++	  Main and sub interrupt controllers of the LPC32xx and its predecessor
++	  the PNX4008. Can be enabled without ARCH_LPC32XX for boards that use
++	  the generic DT machine.
++
+ config OMPIC
+ 	bool
+ 
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index 87b49a109..806a5e597 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -13,7 +13,7 @@ obj-$(CONFIG_DAVINCI_CP_INTC)		+= irq-davinci-cp-intc.o
+ obj-$(CONFIG_EXYNOS_IRQ_COMBINER)	+= exynos-combiner.o
+ obj-$(CONFIG_FARADAY_FTINTC010)		+= irq-ftintc010.o
+ obj-$(CONFIG_ARCH_HIP04)		+= irq-hip04.o
+-obj-$(CONFIG_ARCH_LPC32XX)		+= irq-lpc32xx.o
++obj-$(CONFIG_LPC32XX_IRQCHIP)		+= irq-lpc32xx.o
+ obj-$(CONFIG_ARCH_MMP)			+= irq-mmp.o
+ obj-$(CONFIG_IRQ_MXS)			+= irq-mxs.o
+ obj-$(CONFIG_ARCH_TEGRA)		+= irq-tegra.o
+-- 
+2.53.0
+

@@ -1,0 +1,270 @@
+From 8821782ab59450b8214b4b1850286c9c99cd1e6c Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 12 Oct 2026 23:40:31 +0200
+Subject: [PATCH 02/17] clocksource: add PNX4008 millisecond timer driver
+
+The PNX4008 has no LPC32xx-style timers 0-5, so timer-lpc32xx does not
+apply. Add a driver for its millisecond timer (MSTIM, also present on
+the LPC32xx): a 32-bit up-counter on the 32.768 kHz RTC clock with two
+match registers.
+
+The counter runs free and serves as clocksource and sched_clock. Match 0
+drives the clockevent; periodic mode advances the match value from the
+interrupt handler instead of resetting the counter, so the clocksource
+is never disturbed.
+
+Tested on a Sony Ericsson P1i (MIC line 27, level high).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clocksource/Kconfig               |  10 ++
+ drivers/clocksource/Makefile              |   1 +
+ drivers/clocksource/timer-pnx4008-mstim.c | 203 ++++++++++++++++++++++
+ 3 files changed, 214 insertions(+)
+ create mode 100644 drivers/clocksource/timer-pnx4008-mstim.c
+
+diff --git a/drivers/clocksource/Kconfig b/drivers/clocksource/Kconfig
+index 4469e7f55..8cf1cdb57 100644
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -249,6 +249,16 @@ config CLKSRC_LPC32XX
+ 	help
+ 	  Support for the LPC32XX clocksource.
+ 
++config CLKSRC_PNX4008_MSTIM
++	bool "Clocksource for the PNX4008 millisecond timer"
++	depends on HAS_IOMEM
++	depends on ARM || COMPILE_TEST
++	select CLKSRC_MMIO
++	select TIMER_OF
++	help
++	  Clocksource and clockevent driver for the 32.768 kHz millisecond
++	  timer (MSTIM) of the NXP PNX4008, also found on the LPC32xx.
++
+ config CLKSRC_PISTACHIO
+ 	bool "Clocksource for Pistachio SoC"
+ 	depends on HAS_IOMEM
+diff --git a/drivers/clocksource/Makefile b/drivers/clocksource/Makefile
+index 64ab547de..cc36c8835 100644
+--- a/drivers/clocksource/Makefile
++++ b/drivers/clocksource/Makefile
+@@ -45,6 +45,7 @@ obj-$(CONFIG_CLKSRC_STM32)	+= timer-stm32.o
+ obj-$(CONFIG_CLKSRC_STM32_LP)	+= timer-stm32-lp.o
+ obj-$(CONFIG_CLKSRC_EXYNOS_MCT)	+= exynos_mct.o
+ obj-$(CONFIG_CLKSRC_LPC32XX)	+= timer-lpc32xx.o
++obj-$(CONFIG_CLKSRC_PNX4008_MSTIM)	+= timer-pnx4008-mstim.o
+ obj-$(CONFIG_CLKSRC_MPS2)	+= mps2-timer.o
+ obj-$(CONFIG_CLKSRC_SAMSUNG_PWM)	+= samsung_pwm_timer.o
+ obj-$(CONFIG_FSL_FTM_TIMER)	+= timer-fsl-ftm.o
+diff --git a/drivers/clocksource/timer-pnx4008-mstim.c b/drivers/clocksource/timer-pnx4008-mstim.c
+new file mode 100644
+index 000000000..00b978dbd
+--- /dev/null
++++ b/drivers/clocksource/timer-pnx4008-mstim.c
+@@ -0,0 +1,203 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Millisecond timer (MSTIM) of the NXP PNX4008, also present on the LPC32xx.
++ *
++ * A 32-bit up-counter clocked from the 32.768 kHz RTC oscillator, with two match
++ * registers. The counter runs free and serves as clocksource and sched_clock. Match 0
++ * drives the clockevent; periodic mode advances the match value from the interrupt
++ * handler instead of resetting the counter, so the clocksource is never disturbed.
++ */
++
++#include <linux/clk.h>
++#include <linux/clockchips.h>
++#include <linux/clocksource.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/sched_clock.h>
++#include <linux/slab.h>
++
++#define MSTIM_INT		0x00	/* write 1 to clear */
++#define MSTIM_INT_MATCH0	BIT(0)
++#define MSTIM_INT_MATCH1	BIT(1)
++#define MSTIM_CTRL		0x04
++#define MSTIM_CTRL_COUNT_ENAB	BIT(0)
++#define MSTIM_CTRL_RESET_COUNT	BIT(1)	/* holds the counter at 0 while set */
++#define MSTIM_COUNTER		0x08
++#define MSTIM_MCTRL		0x14
++#define MSTIM_MCTRL_MR0_INT	BIT(0)
++#define MSTIM_MATCH0		0x18
++
++/*
++ * A match is only seen when the counter steps onto it, so a value written too close to
++ * the current count can be missed. Two ticks (61 us) is far more than the few bus
++ * cycles between reading the counter and writing the match.
++ */
++#define MSTIM_MIN_DELTA		2
++
++struct mstim {
++	struct clock_event_device ced;
++	void __iomem *base;
++	u32 period;
++};
++
++static void __iomem *mstim_sched_counter;
++
++static u64 notrace mstim_read_sched_clock(void)
++{
++	return readl(mstim_sched_counter);
++}
++
++static inline struct mstim *to_mstim(struct clock_event_device *ced)
++{
++	return container_of(ced, struct mstim, ced);
++}
++
++static void mstim_arm(struct mstim *t, u32 match)
++{
++	writel(match, t->base + MSTIM_MATCH0);
++	writel(MSTIM_MCTRL_MR0_INT, t->base + MSTIM_MCTRL);
++}
++
++static int mstim_shutdown(struct clock_event_device *ced)
++{
++	struct mstim *t = to_mstim(ced);
++
++	writel(0, t->base + MSTIM_MCTRL);
++	writel(MSTIM_INT_MATCH0, t->base + MSTIM_INT);
++	return 0;
++}
++
++static int mstim_set_next_event(unsigned long delta, struct clock_event_device *ced)
++{
++	struct mstim *t = to_mstim(ced);
++	u32 match;
++
++	writel(MSTIM_INT_MATCH0, t->base + MSTIM_INT);
++	match = readl(t->base + MSTIM_COUNTER) + delta;
++	mstim_arm(t, match);
++
++	/* Counter already at or past the match: the event may never fire. */
++	if ((s32)(readl(t->base + MSTIM_COUNTER) - match) >= 0)
++		return -ETIME;
++	return 0;
++}
++
++static int mstim_set_periodic(struct clock_event_device *ced)
++{
++	struct mstim *t = to_mstim(ced);
++
++	writel(MSTIM_INT_MATCH0, t->base + MSTIM_INT);
++	mstim_arm(t, readl(t->base + MSTIM_COUNTER) + t->period);
++	return 0;
++}
++
++static irqreturn_t mstim_interrupt(int irq, void *dev_id)
++{
++	struct mstim *t = dev_id;
++
++	if (!(readl(t->base + MSTIM_INT) & MSTIM_INT_MATCH0))
++		return IRQ_NONE;
++	writel(MSTIM_INT_MATCH0, t->base + MSTIM_INT);
++
++	if (clockevent_state_periodic(&t->ced)) {
++		u32 match = readl(t->base + MSTIM_MATCH0) + t->period;
++
++		/* Fell a whole period behind: resync rather than wait for a wrap (36 h). */
++		if ((s32)(readl(t->base + MSTIM_COUNTER) - match) >= 0)
++			match = readl(t->base + MSTIM_COUNTER) + t->period;
++		writel(match, t->base + MSTIM_MATCH0);
++	}
++
++	t->ced.event_handler(&t->ced);
++	return IRQ_HANDLED;
++}
++
++static int __init mstim_init(struct device_node *np)
++{
++	struct mstim *t;
++	struct clk *clk;
++	unsigned long rate;
++	int irq, ret;
++
++	t = kzalloc(sizeof(*t), GFP_KERNEL);
++	if (!t)
++		return -ENOMEM;
++
++	t->base = of_iomap(np, 0);
++	if (!t->base) {
++		pr_err("%pOF: cannot map registers\n", np);
++		ret = -ENXIO;
++		goto err_free;
++	}
++
++	clk = of_clk_get(np, 0);
++	if (IS_ERR(clk)) {
++		pr_err("%pOF: no clock\n", np);
++		ret = PTR_ERR(clk);
++		goto err_unmap;
++	}
++	ret = clk_prepare_enable(clk);
++	if (ret)
++		goto err_clk_put;
++	rate = clk_get_rate(clk);
++
++	irq = irq_of_parse_and_map(np, 0);
++	if (!irq) {
++		pr_err("%pOF: no interrupt\n", np);
++		ret = -EINVAL;
++		goto err_clk_disable;
++	}
++
++	/* Take the timer over from the boot firmware and let it run free from 0. */
++	writel(0, t->base + MSTIM_MCTRL);
++	writel(MSTIM_INT_MATCH0 | MSTIM_INT_MATCH1, t->base + MSTIM_INT);
++	writel(MSTIM_CTRL_RESET_COUNT, t->base + MSTIM_CTRL);
++	writel(MSTIM_CTRL_COUNT_ENAB, t->base + MSTIM_CTRL);
++
++	ret = clocksource_mmio_init(t->base + MSTIM_COUNTER, "mstim", rate, 300, 32,
++				    clocksource_mmio_readl_up);
++	if (ret)
++		goto err_irq;
++
++	mstim_sched_counter = t->base + MSTIM_COUNTER;
++	sched_clock_register(mstim_read_sched_clock, 32, rate);
++
++	t->period = DIV_ROUND_CLOSEST(rate, HZ);
++	t->ced.name = "mstim";
++	t->ced.features = CLOCK_EVT_FEAT_ONESHOT | CLOCK_EVT_FEAT_PERIODIC;
++	t->ced.rating = 300;
++	t->ced.cpumask = cpumask_of(0);
++	t->ced.irq = irq;
++	t->ced.set_next_event = mstim_set_next_event;
++	t->ced.set_state_shutdown = mstim_shutdown;
++	t->ced.set_state_oneshot = mstim_shutdown;
++	t->ced.set_state_periodic = mstim_set_periodic;
++	t->ced.tick_resume = mstim_shutdown;
++
++	ret = request_irq(irq, mstim_interrupt, IRQF_TIMER, "mstim", t);
++	if (ret) {
++		pr_err("%pOF: cannot request IRQ %d\n", np, irq);
++		goto err_irq;
++	}
++
++	clockevents_config_and_register(&t->ced, rate, MSTIM_MIN_DELTA, 0x7fffffff);
++
++	pr_info("%pOF: %lu Hz, irq %d\n", np, rate, irq);
++	return 0;
++
++err_irq:
++	irq_dispose_mapping(irq);
++err_clk_disable:
++	clk_disable_unprepare(clk);
++err_clk_put:
++	clk_put(clk);
++err_unmap:
++	iounmap(t->base);
++err_free:
++	kfree(t);
++	return ret;
++}
++TIMER_OF_DECLARE(pnx4008_mstim, "nxp,pnx4008-mstim", mstim_init);
+-- 
+2.53.0
+
