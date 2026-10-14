@@ -55,7 +55,7 @@ Kernel patches, in short:
 |---|---|
 | Shift, Alt | apply to the next key; twice = Caps / Alt lock; a third press unlocks |
 | Alt + key | the symbol or red digit printed on the key (`@ / : ? ( ) ' + - ! * #`, `1`-`9`, Space = `0`) |
-| `.` | tapped again within a second, cycles through `, ? ! _ \ \| ~ `` ` `` ^ & % $ " ; = < > [ ] { } # * @ / : ' ( ) + -` |
+| `.` | tapped again within a second, cycles through `` , ? ! _ \ \| ~ ` ^ & % $ " ; = < > [ ] { } # * @ / : ' ( ) + - `` |
 | Back | Ctrl-C; Shift + Back = Ctrl-D |
 | Shift, then Alt | Ctrl for the next key (e.g. Ctrl-Z) |
 | `@` side key | Tab |
