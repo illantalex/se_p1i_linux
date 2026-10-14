@@ -24,6 +24,7 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 
@@ -298,6 +299,85 @@
 				output-high;
 				line-name = "QWERTY_BACKLIGHT_EN";
 			};
+		};
+
+		/*
+		 * Key scanner, LPC32xx layout (drivers/input/keyboard/lpc32xx-keys.c). Wiring
+		 * (sheet BCT1DA p6): KEY_COL[0..5] / KEY_ROW[0..5] on the scanner pins, KEY_ROW[6]
+		 * on GPIO_02 and KEY_COL[6] on GPI_08 -- the scanner still handles them: with a
+		 * 7x7 matrix, Y (KEY_ROW[6] x KEY_COL[5]) reads back as data word 6, bit 5. The
+		 * jog dial rotation is on GPIO_00 (JOG_INT) / GPIO_01 (JOG_DIR), not here.
+		 * Interrupt SIC1 22, verified on the device.
+		 * Keymap from evdump on the device (scancode = row * 8 + col), German QWERTZ labels.
+		 */
+		keypad@40050000 {
+			compatible = "nxp,lpc3220-key";
+			reg = <0x40050000 0x1000>;
+			interrupt-parent = <&sic1>;
+			interrupts = <22 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal_32k>;
+			keypad,num-rows = <7>;
+			keypad,num-columns = <7>;
+			nxp,debounce-delay-ms = <3>;
+			nxp,scan-delay-ms = <34>;
+			linux,keymap = <
+				MATRIX_KEY(0, 0, KEY_EMAIL)	/* "@" key */
+				MATRIX_KEY(0, 2, KEY_O)
+				MATRIX_KEY(0, 3, KEY_P)
+				MATRIX_KEY(0, 4, KEY_L)
+				MATRIX_KEY(0, 5, KEY_BACKSPACE)	/* 2nd row, 10th key */
+				MATRIX_KEY(0, 6, KEY_ENTER)	/* KEY_ROW[6] x KEY_COL[0] */
+				MATRIX_KEY(1, 0, KEY_CAMERA)	/* camera full press (with focus held) */
+				MATRIX_KEY(1, 2, KEY_U)
+				MATRIX_KEY(1, 3, KEY_I)
+				MATRIX_KEY(1, 4, KEY_J)
+				MATRIX_KEY(1, 5, KEY_K)
+				MATRIX_KEY(2, 0, KEY_CAMERA_FOCUS)	/* camera half press */
+				MATRIX_KEY(2, 2, KEY_Z)
+				MATRIX_KEY(2, 3, KEY_H)
+				MATRIX_KEY(2, 4, KEY_G)
+				MATRIX_KEY(3, 1, KEY_ENTER)	/* jog dial press */
+				MATRIX_KEY(3, 2, KEY_R)
+				MATRIX_KEY(3, 3, KEY_T)
+				MATRIX_KEY(3, 4, KEY_F)
+				MATRIX_KEY(4, 2, KEY_E)
+				MATRIX_KEY(4, 3, KEY_D)
+				MATRIX_KEY(4, 4, KEY_S)
+				MATRIX_KEY(5, 0, KEY_BACK)	/* Back */
+				MATRIX_KEY(5, 2, KEY_Q)
+				MATRIX_KEY(5, 3, KEY_W)
+				MATRIX_KEY(5, 4, KEY_A)
+				MATRIX_KEY(1, 6, KEY_DOT)	/* KEY_ROW[6] x KEY_COL[1] */
+				MATRIX_KEY(2, 6, KEY_N)	/* KEY_ROW[6] x KEY_COL[2] */
+				MATRIX_KEY(3, 6, KEY_B)	/* KEY_ROW[6] x KEY_COL[3] */
+				MATRIX_KEY(4, 6, KEY_X)	/* KEY_ROW[6] x KEY_COL[4] */
+				MATRIX_KEY(5, 6, KEY_Y)	/* KEY_ROW[6] x KEY_COL[5] */
+				MATRIX_KEY(5, 5, KEY_COMMA)
+				MATRIX_KEY(4, 5, KEY_C)
+				MATRIX_KEY(3, 5, KEY_V)
+				MATRIX_KEY(2, 5, KEY_M)
+				/* Bottom row: KEY_COL[6] x KEY_ROW[2..6] */
+				MATRIX_KEY(6, 2, KEY_LEFTSHIFT)
+				MATRIX_KEY(6, 3, KEY_LEFT)	/* also "*" */
+				MATRIX_KEY(6, 4, KEY_SPACE)	/* also "0+" */
+				MATRIX_KEY(6, 5, KEY_RIGHT)	/* also "#" */
+				MATRIX_KEY(6, 6, KEY_LEFTALT)
+			>;
+		};
+
+		/*
+		 * Jog dial rotation (S2820): JOG_INT = GPIO_00, JOG_DIR = GPIO_01, a quadrature
+		 * pair resting high. Verified with gpioget: up = DIR falls first, down = INT
+		 * falls first, so DIR's level at INT's falling edge gives the direction
+		 * (drivers/input/misc/jog-dial.c). GPIO_00's interrupt: SIC2 0 as on the LPC32xx,
+		 * verified on the device. The press is in the key matrix (KEY_ENTER above).
+		 */
+		jog-dial {
+			compatible = "sonyericsson,jog-dial";
+			interrupt-parent = <&sic2>;
+			interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+			dir-gpios = <&gpio 3 1 GPIO_ACTIVE_HIGH>;
+			linux,codes = <KEY_UP KEY_DOWN>;
 		};
 
 		/*
