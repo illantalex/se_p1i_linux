@@ -74,6 +74,12 @@
 			reg = <0x81000000 0x50000>;
 			no-map;
 		};
+
+		/* Audio DSP shared buffer (dsptool experiments; the DSP reads it by physical address). */
+		dsp_shared: dsp-shared@81100000 {
+			reg = <0x81100000 0x10000>;
+			no-map;
+		};
 	};
 
 	/*

@@ -61,8 +61,8 @@ for t in $GPIOD_TOOLS; do
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"
 done
 # Own small tools (memdump.c: /dev/mem dumper, evdump.c: input event viewer, p1ikbd.c:
-# keypad-to-console daemon) share the binary the same way.
-OWN_TOOLS="memdump evdump p1ikbd"
+# keypad-to-console daemon, dsptool.c: audio DSP experiments) share the binary the same way.
+OWN_TOOLS="memdump evdump p1ikbd dsptool"
 for t in $OWN_TOOLS; do
 	arm-linux-gnueabi-gcc -O2 -Wall -c -Dmain=${t}_main -o "$GPIOD/tools/$t-multi.o" $t.c
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"
@@ -74,6 +74,15 @@ cp "$GPIOD/tools/gpiod-multi" rootfs/usr/bin/gpiod-multi
 for t in $GPIOD_TOOLS $OWN_TOOLS; do
 	ln -sfn gpiod-multi rootfs/usr/bin/$t
 done
+
+# Proprietary firmware is never committed: if a local firmware/ directory exists (e.g. the
+# DSP images from the phone's Z:\private\10200B19), it goes into the initramfs as /lib/firmware.
+rm -rf rootfs/lib/firmware
+if [ -d firmware ]; then
+	mkdir -p rootfs/lib/firmware
+	cp -r firmware/. rootfs/lib/firmware/
+	echo "=== Firmware: $(cd firmware && find . -type f | wc -l) file(s) from firmware/ into /lib/firmware"
+fi
 
 echo "=== Kernel"
 cd "$TOP"

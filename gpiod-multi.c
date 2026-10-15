@@ -3,8 +3,8 @@
  * Multi-call wrapper for the libgpiod tools, BusyBox-style: one statically linked binary
  * (one copy of glibc) instead of five ~660 KB ones, which would not fit the 4 MB payload.
  * build.sh renames each tool's main() to <tool>_main with objcopy and links them with
- * this; /usr/bin/gpioset etc. are symlinks to it. memdump.c, evdump.c and p1ikbd.c
- * ride along the same way.
+ * this; /usr/bin/gpioset etc. are symlinks to it. memdump.c, evdump.c, p1ikbd.c
+ * and dsptool.c ride along the same way.
  */
 
 #include <stdio.h>
@@ -18,6 +18,7 @@ int gpiomon_main(int argc, char **argv);
 int memdump_main(int argc, char **argv);
 int evdump_main(int argc, char **argv);
 int p1ikbd_main(int argc, char **argv);
+int dsptool_main(int argc, char **argv);
 
 static const struct {
 	const char *name;
@@ -31,6 +32,7 @@ static const struct {
 	{ "memdump", memdump_main },
 	{ "evdump", evdump_main },
 	{ "p1ikbd", p1ikbd_main },
+	{ "dsptool", dsptool_main },
 };
 
 int main(int argc, char **argv)

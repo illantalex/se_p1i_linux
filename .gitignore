@@ -17,3 +17,6 @@
 /gpiod-*.log
 # Reference sources fetched from old kernels (not ours)
 /ref/
+# Proprietary firmware copied from the phone (DSP, WLAN); never committed
+/firmware/
+/rootfs/lib/
