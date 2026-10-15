@@ -1,0 +1,35 @@
+From 3796a3772754f59bdf71d1072e6219b897ae5aa1 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Thu, 15 Oct 2026 22:30:22 +0200
+Subject: [PATCH 19/19] ARM: dts: pnx4008-p1i: reserve a shared buffer for the
+ audio DSP
+
+The Teak DSP firmware is given the physical address of a shared buffer
+(message 11 after boot); keep 64 KiB at 0x81100000 out of the kernel's
+memory so experiments with it from user space (/dev/mem) are safe.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 0f430965c..2f81ca1f1 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -74,6 +74,12 @@ framebuffer_mem: framebuffer@81000000 {
+ 			reg = <0x81000000 0x50000>;
+ 			no-map;
+ 		};
++
++		/* Audio DSP shared buffer (dsptool experiments; the DSP reads it by physical address). */
++		dsp_shared: dsp-shared@81100000 {
++			reg = <0x81100000 0x10000>;
++			no-map;
++		};
+ 	};
+ 
+ 	/*
+-- 
+2.53.0
+

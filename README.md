@@ -28,13 +28,13 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 17 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 19 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
 | `rootfs/` | `inittab` (shells on `ttyS0` and `tty1`), `rcS`, `root/regdump.sh` |
 | `initramfs.list` | Initramfs entries that need root to create (`/dev/console`) |
-| `gpiod-multi.c`, `memdump.c`, `evdump.c`, `p1ikbd.c` | One static multi-call binary: libgpiod tools, a `/dev/mem` dumper, an input-event viewer, the keypad daemon |
+| `gpiod-multi.c`, `memdump.c`, `evdump.c`, `p1ikbd.c`, `dsptool.c` | One static multi-call binary: libgpiod tools, a `/dev/mem` dumper, an input-event viewer, the keypad daemon, audio DSP experiments |
 | `capture.sh` | Runs a command on the phone's serial shell and saves the output on the PC |
 | `build.sh` | Builds everything into `build/zImage-p1i` |
 
@@ -44,7 +44,9 @@ Kernel patches, in short:
 - `lpc32xx` irqchip, GPIO, PWM, key scanner, `i2c-pnx` and the PNX4008 watchdog enabled for
   ARMv5 multiplatform (the PNX4008 shares these blocks with the LPC32xx, but
   `ARCH_LPC32XX` itself does not boot here);
-- fixes: `pwm-lpc32xx` NULL dereference at probe, `stmpe-i2c` without an interrupt;
+- fixes: `pwm-lpc32xx` NULL dereference at probe, `stmpe-i2c` without an interrupt, an
+  interrupt storm from a stuck receive timeout on the 8250 UART (stalled the boot until a
+  character arrived on the serial line);
 - `arch/arm/boot/dts/pnx4008-p1i.dts`.
 
 ## Typing on the keypad
@@ -60,6 +62,7 @@ Kernel patches, in short:
 | Shift, then Alt | Ctrl for the next key (e.g. Ctrl-Z) |
 | `@` side key | Tab |
 | arrows, jog dial | cursor keys; jog press = Enter |
+| held key | repeats after 0.5 s, 30 per second (not Shift, Alt or the `.` multi-tap) |
 
 It grabs the input devices, so stop it (`killall p1ikbd`) before using `evdump`.
 
@@ -76,6 +79,11 @@ The first run downloads Linux 6.1.2, BusyBox 1.37.0 and libgpiod 2.2.5 (checksum
 unpacks the kernel into `linux/` as a git repository and applies `patches/` on a branch
 `p1i`. The result is `build/zImage-p1i`: the zImage with the device tree appended and the
 initramfs built in.
+
+Proprietary firmware is not part of this repository. If a local `firmware/` directory
+exists, `build.sh` copies it into the initramfs as `/lib/firmware`; `dsptool` expects the
+audio DSP images from the phone's `Z:\private\10200B19\` in `firmware/p1i-dsp/`
+(`DspStartupCode.bin`, `DspStartupData.bin`).
 
 To boot it, copy `build/zImage-p1i` into the handover project's `baremetal/`, run
 `./build-linux.sh payload` there, and copy the resulting `p1i_linux.bin` to
