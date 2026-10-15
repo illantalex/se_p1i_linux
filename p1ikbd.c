@@ -14,6 +14,7 @@
  *   Back           Ctrl-C; Shift + Back = Ctrl-D
  *   @ (side key)   Tab (shell completion)
  *   arrows, jog    cursor keys; jog press = Enter
+ *   held keys      repeat after 500 ms, 30 per second (not Shift, Alt or the "." multi-tap)
  *
  *   p1ikbd [-f]    -f: stay in the foreground and log keys to stderr
  */
@@ -30,6 +31,8 @@
 #include <unistd.h>
 
 #define MULTITAP_MS	1000
+#define REPEAT_DELAY_MS	500
+#define REPEAT_RATE_MS	33
 
 struct key {
 	unsigned short code;
@@ -69,6 +72,11 @@ static enum mod shift, alt;
 static int ctrl_once, verbose;
 static int tty = -1;
 
+/* Key being held and what it typed, for auto-repeat; rep_code < 0: nothing to repeat. */
+static int rep_code = -1;
+static char rep_out[8];
+static long rep_next_ms;
+
 static void type(const char *s)
 {
 	for (; *s; s++)
@@ -89,6 +97,13 @@ static enum mod next_mod(enum mod m)
 	return m == MOD_OFF ? MOD_ONCE : m == MOD_ONCE ? MOD_LOCK : MOD_OFF;
 }
 
+static void set_repeat(unsigned int code, const char *out)
+{
+	rep_code = code;
+	snprintf(rep_out, sizeof(rep_out), "%s", out);
+	rep_next_ms = now_ms() + REPEAT_DELAY_MS;
+}
+
 static void press(unsigned int code)
 {
 	static long last_dot_ms;
@@ -99,6 +114,7 @@ static void press(unsigned int code)
 	const char *out;
 	size_t i;
 
+	rep_code = -1;
 	if (code == KEY_LEFTSHIFT) {
 		shift = next_mod(shift);
 		return;
@@ -144,6 +160,7 @@ static void press(unsigned int code)
 		if (k->normal[0] >= 'a' && k->normal[0] <= 'z' && !k->normal[1]) {
 			buf[0] = k->normal[0] & 0x1f;
 			type(buf);
+			set_repeat(code, buf);
 			return;
 		}
 	}
@@ -153,6 +170,7 @@ static void press(unsigned int code)
 		fprintf(stderr, "key %u shift %d alt %d -> %s\n", code, shift, alt,
 			out[0] == '\033' ? "ESC..." : out);
 	type(out);
+	set_repeat(code, out);
 
 	if (shift == MOD_ONCE)
 		shift = MOD_OFF;
@@ -222,7 +240,19 @@ int main(int argc, char **argv)
 	}
 
 	for (;;) {
-		if (poll(pfd, n, -1) < 0)
+		int timeout = -1;
+
+		if (rep_code >= 0) {
+			long left = rep_next_ms - now_ms();
+
+			if (left <= 0) {
+				type(rep_out);
+				rep_next_ms += REPEAT_RATE_MS;
+				continue;
+			}
+			timeout = left;
+		}
+		if (poll(pfd, n, timeout) <= 0)
 			continue;
 		for (i = 0; i < n; i++) {
 			struct input_event ev;
@@ -231,8 +261,12 @@ int main(int argc, char **argv)
 				continue;
 			if (read(pfd[i].fd, &ev, sizeof(ev)) != sizeof(ev))
 				continue;
-			if (ev.type == EV_KEY && ev.value == 1)
+			if (ev.type != EV_KEY)
+				continue;
+			if (ev.value == 1)
 				press(ev.code);
+			else if (ev.value == 0 && (int)ev.code == rep_code)
+				rep_code = -1;
 		}
 	}
 }
