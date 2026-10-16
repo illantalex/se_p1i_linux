@@ -1,7 +1,7 @@
 From 131c9bb9366a7d5857c519792871cb89401fa2c4 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 19:32:39 +0200
-Subject: [PATCH 08/26] gpio: lpc32xx: allow on ARMv5 multiplatform without
+Subject: [PATCH 08/27] gpio: lpc32xx: allow on ARMv5 multiplatform without
  ARCH_LPC32XX
 
 The PNX4008 has the same GPIO block (P3 GPIO/GPI/GPO banks at the same

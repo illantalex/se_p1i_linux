@@ -1,7 +1,7 @@
 From 858e7558300c3b07e4f72e219a4e0fe036b1424a Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 19:32:40 +0200
-Subject: [PATCH 11/26] ARM: dts: pnx4008-p1i: add GPIO, STMPE801 expander and
+Subject: [PATCH 11/27] ARM: dts: pnx4008-p1i: add GPIO, STMPE801 expander and
  torch LED
 
 - GPIO block (LPC32xx layout); GPO_21 is CAM_POW, GPO_11 CAM_RST#.

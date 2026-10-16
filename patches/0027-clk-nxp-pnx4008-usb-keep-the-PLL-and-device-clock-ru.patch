@@ -1,0 +1,117 @@
+From bcd268d8a91318d4353452fc1a50f52db5d606c5 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 22:59:14 +0200
+Subject: [PATCH 27/27] clk: nxp: pnx4008-usb: keep the PLL and device clock
+ running
+
+On the PNX4008 an access to the USB device controller while its clock is
+off hangs the bus. lpc32xx_udc gates the clock while no cable is attached
+and its VBUS work can race with that: with the cable plugged in at boot the
+P1i froze right after the driver probed. Leave the PLL and the device and
+host clocks on once started and ignore disable for them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clk/nxp/clk-pnx4008-usb.c | 29 +++++++++++++++++++++++------
+ 1 file changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/clk/nxp/clk-pnx4008-usb.c b/drivers/clk/nxp/clk-pnx4008-usb.c
+index 913ab4268..416b99136 100644
+--- a/drivers/clk/nxp/clk-pnx4008-usb.c
++++ b/drivers/clk/nxp/clk-pnx4008-usb.c
+@@ -16,6 +16,11 @@
+  * a driver asks its power manager for it; without it the PLL never locks and the device
+  * controller hangs the bus on its first command. So the oscillator is started at probe.
+  *
++ * Unlike on the LPC32xx, any access to the device controller while its clock is off hangs
++ * the bus. lpc32xx_udc gates its clock while no cable is attached, and its VBUS work can
++ * touch the registers around that (e.g. a cable present at boot froze the phone), so once
++ * started, the PLL and the device clock are left running and disable is ignored for them.
++ *
+  * Clock specifier = index as in dt-bindings/clock/lpc32xx-clock.h (LPC32XX_USB_CLK_*).
+  */
+ 
+@@ -46,6 +51,8 @@ struct pnx4008_usb_gate {
+ 	struct clk_hw hw;
+ 	struct pnx4008_usb_clk *usb;
+ 	u32 mask;		/* USB_CLK_CTRL / USB_CLK_STS bits */
++	bool keep_on;		/* never gated again once enabled */
++	bool on;
+ };
+ 
+ struct pnx4008_usb_clk {
+@@ -81,12 +88,11 @@ static int pnx4008_usb_pll_get(struct pnx4008_usb_clk *usb)
+ 	return 0;
+ }
+ 
++/* The PLL is never powered down again: see the note on bus hangs at the top. */
+ static void pnx4008_usb_pll_put(struct pnx4008_usb_clk *usb)
+ {
+-	if (--usb->pll_users)
+-		return;
+-	writel(readl(usb->usb_ctrl) & ~USB_CTRL_AHB, usb->usb_ctrl);
+-	writel(readl(usb->usb_ctrl) & ~USB_CTRL_PLL_OFF, usb->usb_ctrl);
++	if (usb->pll_users > 1)
++		usb->pll_users--;
+ }
+ 
+ static int pnx4008_usb_gate_enable(struct clk_hw *hw)
+@@ -98,6 +104,10 @@ static int pnx4008_usb_gate_enable(struct clk_hw *hw)
+ 	int ret;
+ 
+ 	spin_lock_irqsave(&usb->lock, flags);
++	if (g->keep_on && g->on) {
++		spin_unlock_irqrestore(&usb->lock, flags);
++		return 0;
++	}
+ 	ret = pnx4008_usb_pll_get(usb);
+ 	if (!ret) {
+ 		writel(readl(usb->base + USB_CLK_CTRL) | g->mask, usb->base + USB_CLK_CTRL);
+@@ -110,6 +120,8 @@ static int pnx4008_usb_gate_enable(struct clk_hw *hw)
+ 			writel(readl(usb->base + USB_CLK_CTRL) & ~g->mask,
+ 			       usb->base + USB_CLK_CTRL);
+ 			pnx4008_usb_pll_put(usb);
++		} else {
++			g->on = true;
+ 		}
+ 	}
+ 	spin_unlock_irqrestore(&usb->lock, flags);
+@@ -122,9 +134,12 @@ static void pnx4008_usb_gate_disable(struct clk_hw *hw)
+ 	struct pnx4008_usb_clk *usb = g->usb;
+ 	unsigned long flags;
+ 
++	if (g->keep_on)
++		return;
+ 	spin_lock_irqsave(&usb->lock, flags);
+ 	writel(readl(usb->base + USB_CLK_CTRL) & ~g->mask, usb->base + USB_CLK_CTRL);
+ 	pnx4008_usb_pll_put(usb);
++	g->on = false;
+ 	spin_unlock_irqrestore(&usb->lock, flags);
+ }
+ 
+@@ -150,11 +165,12 @@ static const struct clk_ops pnx4008_usb_gate_ops = {
+ static const struct {
+ 	const char *name;
+ 	u32 mask;
++	bool keep_on;
+ } pnx4008_usb_gates[] = {
+ 	[LPC32XX_USB_CLK_I2C] = { "usb_i2c", BIT(2) },
+ 	/* The device controller also needs the AHB master clock (bit 4). */
+-	[LPC32XX_USB_CLK_DEVICE] = { "usb_dev", BIT(1) | BIT(4) },
+-	[LPC32XX_USB_CLK_HOST] = { "usb_host", BIT(0) | BIT(4) },
++	[LPC32XX_USB_CLK_DEVICE] = { "usb_dev", BIT(1) | BIT(4), true },
++	[LPC32XX_USB_CLK_HOST] = { "usb_host", BIT(0) | BIT(4), true },
+ };
+ 
+ static int pnx4008_usb_clk_probe(struct platform_device *pdev)
+@@ -202,6 +218,7 @@ static int pnx4008_usb_clk_probe(struct platform_device *pdev)
+ 		g->hw.init = &init;
+ 		g->usb = usb;
+ 		g->mask = pnx4008_usb_gates[i].mask;
++		g->keep_on = pnx4008_usb_gates[i].keep_on;
+ 		ret = devm_clk_hw_register(dev, &g->hw);
+ 		if (ret)
+ 			return ret;
+-- 
+2.53.0
+

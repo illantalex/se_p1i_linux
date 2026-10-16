@@ -1,7 +1,7 @@
 From 18836fa44766faf207a3e0e587e6eb0432f7607b Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 20:27:16 +0200
-Subject: [PATCH 13/26] ARM: dts: pnx4008-p1i: add display and keypad backlight
+Subject: [PATCH 13/27] ARM: dts: pnx4008-p1i: add display and keypad backlight
 
 PWM2 (BACKLIGHT_LEVEL) dims both lights and darkens them when disabled.
 GPO_09/GPO_10 enable them: 00 off, 01/10 display + keypad, 11 display
