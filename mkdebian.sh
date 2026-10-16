@@ -6,7 +6,8 @@
 #
 # Needs mmdebstrap and qemu user-mode emulation for ARM registered with binfmt_misc
 # (Debian/Ubuntu: apt install mmdebstrap qemu-user-binfmt, or qemu-user-static on older
-# releases), so that the packages' scripts run here and nothing is left for the phone.
+# releases), so that the packages' scripts run here and nothing is left for the phone. On
+# non-Debian hosts (Ubuntu) also debian-archive-keyring, for the Debian signing keys.
 #
 # The result boots with sysvinit (systemd is too heavy for 208 MHz / 128 MB) and gives root
 # shells without a password on the display (tty1) and the serial console (ttyS0).
@@ -21,7 +22,10 @@ command -v mmdebstrap >/dev/null || { echo "mmdebstrap is not installed"; exit 1
 [ -e /proc/sys/fs/binfmt_misc/qemu-arm ] ||
 	{ echo "no qemu-arm binfmt handler (install qemu-user-binfmt)"; exit 1; }
 
-mmdebstrap --arch=armel --variant=minbase --include=$PACKAGES \
+KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg
+[ -e $KEYRING ] || { echo "$KEYRING missing (install debian-archive-keyring)"; exit 1; }
+
+mmdebstrap --arch=armel --variant=minbase --include=$PACKAGES --keyring=$KEYRING \
 	--customize-hook='chroot "$1" passwd -d root' \
 	--customize-hook='echo p1i > "$1/etc/hostname"' \
 	--customize-hook='printf "127.0.0.1\tlocalhost\n127.0.1.1\tp1i\n" > "$1/etc/hosts"' \
