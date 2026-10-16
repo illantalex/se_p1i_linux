@@ -20,3 +20,5 @@
 # Proprietary firmware copied from the phone (DSP, WLAN); never committed
 /firmware/
 /rootfs/lib/
+# Debian root tarball from mkdebian.sh
+/debian-armel-*.tar.gz
