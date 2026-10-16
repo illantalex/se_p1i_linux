@@ -40,6 +40,7 @@ panel itself, so it relies on starting from Symbian.
 | `initramfs-init.sh` | `/init`: switches to a Linux root on the Memory Stick (partition 2) if there is one, else runs the BusyBox system |
 | `mkdebian.sh` | Builds a minimal Debian armel root (sysvinit) as a tarball, on the PC |
 | `capture.sh` | Runs a command on the phone's serial shell and saves the output on the PC |
+| `sendfile.sh` | Copies a file from the PC to the phone over the serial shell (base64, md5-checked) |
 | `build.sh` | Builds everything into `build/zImage-p1i` |
 
 Kernel patches, in short:
