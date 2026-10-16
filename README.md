@@ -18,7 +18,7 @@ here. No reflashing; `reboot` returns to Symbian.
 | Core | interrupts (MIC/SIC1/SIC2), tickless MSTIM clocksource/clockevent, watchdog reboot |
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
 | FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
-| Memory Stick | Memory Stick Micro slot readable (`/dev/mspblk0p1`, FAT), 4-bit mode, 4.2 MB/s; polling, writes untested |
+| Memory Stick | Memory Stick Micro slot read/write (`/dev/mspblk0p1`, FAT), 4-bit mode: reads 4.2 MB/s, writes ~1.6 MB/s; polling |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
 Not yet: fast or interrupt-driven Memory Stick access, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
