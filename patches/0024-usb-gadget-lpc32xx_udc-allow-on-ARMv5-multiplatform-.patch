@@ -1,0 +1,60 @@
+From 871bb0726f593a076f93d93b1c31bf66748c40dd Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 22:43:12 +0200
+Subject: [PATCH 24/26] usb: gadget: lpc32xx_udc: allow on ARMv5 multiplatform,
+ support probe deferral
+
+The PNX4008 has the same USB device controller as the LPC32xx; let the
+driver build for ARCH_MULTI_V5 (ARCH_LPC32XX does not boot there).
+
+Register it as a normal platform driver instead of with
+module_platform_driver_probe(): probe returns -EPROBE_DEFER until the
+ISP1301 on the USB block's own I2C bus is there, which with
+platform_driver_probe() fails for good ("probe deferral not supported").
+
+Verified on the Sony Ericsson P1i (ST STOTG04 transceiver): enumerates as
+an Ethernet gadget, ping over CDC ECM.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/Kconfig       | 2 +-
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 3 ++-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/Kconfig b/drivers/usb/gadget/udc/Kconfig
+index 5756acb07..a672afc5c 100644
+--- a/drivers/usb/gadget/udc/Kconfig
++++ b/drivers/usb/gadget/udc/Kconfig
+@@ -45,7 +45,7 @@ config USB_AT91
+ 
+ config USB_LPC32XX
+ 	tristate "LPC32XX USB Peripheral Controller"
+-	depends on ARCH_LPC32XX || COMPILE_TEST
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST
+ 	depends on I2C
+ 	select USB_ISP1301
+ 	help
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index cea10cdb8..dc57b9e5c 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -3254,6 +3254,7 @@ MODULE_DEVICE_TABLE(of, lpc32xx_udc_of_match);
+ #endif
+ 
+ static struct platform_driver lpc32xx_udc_driver = {
++	.probe		= lpc32xx_udc_probe,
+ 	.remove		= lpc32xx_udc_remove,
+ 	.shutdown	= lpc32xx_udc_shutdown,
+ 	.suspend	= lpc32xx_udc_suspend,
+@@ -3264,7 +3265,7 @@ static struct platform_driver lpc32xx_udc_driver = {
+ 	},
+ };
+ 
+-module_platform_driver_probe(lpc32xx_udc_driver, lpc32xx_udc_probe);
++module_platform_driver(lpc32xx_udc_driver);
+ 
+ MODULE_DESCRIPTION("LPC32XX udc driver");
+ MODULE_AUTHOR("Kevin Wells <kevin.wells@nxp.com>");
+-- 
+2.53.0
+

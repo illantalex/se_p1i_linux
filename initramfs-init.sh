@@ -45,7 +45,12 @@ if ! cmp -s /usr/bin/gpiod-multi /newroot/usr/local/bin/gpiod-multi; then
 		[ "$(readlink $t)" = gpiod-multi ] && ln -sfn gpiod-multi /newroot/usr/local/bin/${t##*/}
 	done
 fi
+# BusyBox too, for applets Debian lacks (devmem).
+cmp -s /bin/busybox /newroot/usr/local/bin/busybox || cp /bin/busybox /newroot/usr/local/bin/
 [ -d /lib/firmware ] && mkdir -p /newroot/lib/firmware && cp -a /lib/firmware/. /newroot/lib/firmware/
+
+# USB network to the PC: address, route, DNS, clock (see /etc/p1i-usbnet.sh).
+/etc/p1i-usbnet.sh /newroot
 
 # The keypad daemon keeps running across switch_root: the display console gets typed on
 # from the first getty on.

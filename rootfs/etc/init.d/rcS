@@ -8,6 +8,9 @@ mount -t tmpfs tmpfs /tmp
 
 hostname p1i
 
+# USB network to the PC (192.168.7.2, PC 192.168.7.1)
+/etc/p1i-usbnet.sh ""
+
 # Keypad to console with Symbian-style Shift/Alt and the symbols printed on the keys
 p1ikbd
 

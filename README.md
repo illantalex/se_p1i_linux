@@ -20,9 +20,10 @@ here. No reflashing; `reboot` returns to Symbian.
 | FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
 | Memory Stick | Memory Stick Micro slot read/write (`/dev/mspblk0p1`, FAT), 4-bit mode: reads 4.2 MB/s, writes ~1.6 MB/s; polling |
 | Debian | trixie armel (sysvinit) from the Memory Stick's Linux partition, root shells on the display and serial console; ~12 MB RAM used at idle |
+| USB | device mode on the Fast-Port connector: Ethernet gadget (CDC ECM, 12 Mbit/s), phone 192.168.7.2; `pc-usbnet.sh` on the PC shares its internet connection |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
-Not yet: fast or interrupt-driven Memory Stick access, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
+Not yet: fast or interrupt-driven Memory Stick access, USB host, audio codec, camera, Wi-Fi, touchscreen, the GSM
 baseband, and power management. The kernel does not initialise the display controller or the
 panel itself, so it relies on starting from Symbian.
 
@@ -30,7 +31,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 22 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 26 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
@@ -40,12 +41,13 @@ panel itself, so it relies on starting from Symbian.
 | `initramfs-init.sh` | `/init`: switches to a Linux root on the Memory Stick (partition 2) if there is one, else runs the BusyBox system |
 | `mkdebian.sh` | Builds a minimal Debian armel root (sysvinit) as a tarball, on the PC |
 | `capture.sh` | Runs a command on the phone's serial shell and saves the output on the PC |
+| `pc-usbnet.sh` | On the PC: addresses and NAT for the phone's USB network |
 | `sendfile.sh` | Copies a file from the PC to the phone over the serial shell (base64, md5-checked) |
 | `build.sh` | Builds everything into `build/zImage-p1i` |
 
 Kernel patches, in short:
 
-- new drivers: PNX4008 MSTIM timer, PNX4008 Memory Stick host, ST STCF03 flash LED, jog dial;
+- new drivers: PNX4008 MSTIM timer, PNX4008 Memory Stick host, PNX4008 USB clocks, ST STCF03 flash LED, jog dial;
 - `lpc32xx` irqchip, GPIO, PWM, key scanner, `i2c-pnx` and the PNX4008 watchdog enabled for
   ARMv5 multiplatform (the PNX4008 shares these blocks with the LPC32xx, but
   `ARCH_LPC32XX` itself does not boot here);

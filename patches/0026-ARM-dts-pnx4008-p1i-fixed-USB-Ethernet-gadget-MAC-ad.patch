@@ -1,0 +1,29 @@
+From 74bc0b37213649120934b6631ae55db1bca4d1f9 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 22:46:00 +0200
+Subject: [PATCH 26/26] ARM: dts: pnx4008-p1i: fixed USB Ethernet gadget MAC
+ addresses
+
+So the PC side gets a stable interface name (enx025031000001).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 57905ac7d..384e4dc64 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -50,7 +50,7 @@ chosen {
+ 		 * Console on UART6 only: the 8250 driver has a single console, and with two
+ 		 * console= ttyS entries the first port to probe (UART5) takes it.
+ 		 */
+-		bootargs = "earlycon=uart8250,mmio32,0x40098000 console=tty0 console=ttyS0,115200n8 ignore_loglevel";
++		bootargs = "earlycon=uart8250,mmio32,0x40098000 console=tty0 console=ttyS0,115200n8 ignore_loglevel g_ether.dev_addr=02:50:31:00:00:02 g_ether.host_addr=02:50:31:00:00:01";
+ 		stdout-path = "serial0:115200n8";
+ 	};
+ 
+-- 
+2.53.0
+

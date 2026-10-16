@@ -1,0 +1,305 @@
+From fe361a7d58796307a7116023cc347fac77e28c6a Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 22:43:12 +0200
+Subject: [PATCH 23/26] clk: nxp: add PNX4008 USB clock driver
+
+The NXP PNX4008 has the LPC32xx USB block, but its clock block differs and
+the LPC32xx clock driver, which takes over the whole block, would turn off
+clocks the boot firmware relies on. Add a small provider for just the USB
+PLL (USB_CTRL) and the USB block's clock gates (device, host, I2C), with
+the LPC32xx USB clock indices.
+
+The PLL's 1 MHz input is the main 13 MHz oscillator divided by 13. The
+Sony Ericsson P1i's Symbian runs from PLL397 with the main oscillator
+stopped, so the driver starts it at probe; without it the PLL never locks
+and the device controller hangs the bus on its first command. The PLL
+sequence follows Symbian's A1CommsHWController.dll.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clk/Kconfig               |   8 ++
+ drivers/clk/Makefile              |   1 +
+ drivers/clk/nxp/Makefile          |   1 +
+ drivers/clk/nxp/clk-pnx4008-usb.c | 230 ++++++++++++++++++++++++++++++
+ 4 files changed, 240 insertions(+)
+ create mode 100644 drivers/clk/nxp/clk-pnx4008-usb.c
+
+diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
+index d79905f3e..6cdf50957 100644
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -326,6 +326,14 @@ config COMMON_CLK_LOCHNAGAR
+ 	  This driver supports the clocking features of the Cirrus Logic
+ 	  Lochnagar audio development board.
+ 
++config COMMON_CLK_PNX4008_USB
++	bool "Clock driver for the NXP PNX4008 USB block"
++	depends on ARCH_MULTI_V5 || COMPILE_TEST
++	depends on OF
++	help
++	  USB PLL and USB block clock gates (device, host, I2C) of the NXP
++	  PNX4008, for the LPC32xx USB device controller and its I2C bus.
++
+ config COMMON_CLK_NXP
+ 	def_bool COMMON_CLK && (ARCH_LPC18XX || ARCH_LPC32XX)
+ 	select REGMAP_MMIO if ARCH_LPC32XX
+diff --git a/drivers/clk/Makefile b/drivers/clk/Makefile
+index e3ca0d058..a6dda9542 100644
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -104,6 +104,7 @@ obj-y					+= mstar/
+ obj-y					+= mvebu/
+ obj-$(CONFIG_ARCH_MXS)			+= mxs/
+ obj-$(CONFIG_COMMON_CLK_NXP)		+= nxp/
++obj-$(CONFIG_COMMON_CLK_PNX4008_USB)	+= nxp/
+ obj-$(CONFIG_COMMON_CLK_PISTACHIO)	+= pistachio/
+ obj-$(CONFIG_COMMON_CLK_PXA)		+= pxa/
+ obj-$(CONFIG_COMMON_CLK_QCOM)		+= qcom/
+diff --git a/drivers/clk/nxp/Makefile b/drivers/clk/nxp/Makefile
+index 2cf6317d2..0b53623e8 100644
+--- a/drivers/clk/nxp/Makefile
++++ b/drivers/clk/nxp/Makefile
+@@ -3,3 +3,4 @@ obj-$(CONFIG_ARCH_LPC18XX)	+= clk-lpc18xx-cgu.o
+ obj-$(CONFIG_ARCH_LPC18XX)	+= clk-lpc18xx-ccu.o
+ obj-$(CONFIG_ARCH_LPC18XX)	+= clk-lpc18xx-creg.o
+ obj-$(CONFIG_ARCH_LPC32XX)	+= clk-lpc32xx.o
++obj-$(CONFIG_COMMON_CLK_PNX4008_USB)	+= clk-pnx4008-usb.o
+diff --git a/drivers/clk/nxp/clk-pnx4008-usb.c b/drivers/clk/nxp/clk-pnx4008-usb.c
+new file mode 100644
+index 000000000..913ab4268
+--- /dev/null
++++ b/drivers/clk/nxp/clk-pnx4008-usb.c
+@@ -0,0 +1,230 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * USB clocks of the NXP PNX4008: the USB PLL (48 MHz) and the clock gates of the USB block
++ * (device, host, OTG, AHB and its I2C controller), as on the LPC32xx.
++ *
++ * The LPC32xx clock driver cannot be used here: it takes over the whole clock block, whose
++ * PNX4008 layout differs, and would switch off clocks the boot firmware left running. This
++ * one only touches USB_CTRL and the USB block's clock control registers.
++ *
++ * The PLL sequence is the one of the Sony Ericsson P1i's Symbian (A1CommsHWController.dll):
++ * request the AHB clock (bit 24), set the device clock request, PLL power and multiplier
++ * (0x4300be), wait for lock (bit 0), then enable the PLL output to the block (bit 18).
++ *
++ * The PLL's 1 MHz input is the main 13 MHz oscillator divided by 13. Symbian runs the system
++ * from PLL397 (32 kHz crystal) and keeps the main oscillator stopped (OSC_CTRL bit 0) unless
++ * a driver asks its power manager for it; without it the PLL never locks and the device
++ * controller hangs the bus on its first command. So the oscillator is started at probe.
++ *
++ * Clock specifier = index as in dt-bindings/clock/lpc32xx-clock.h (LPC32XX_USB_CLK_*).
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++#include <dt-bindings/clock/lpc32xx-clock.h>
++
++#define USB_CLK_CTRL		0xf4
++#define USB_CLK_STS		0xf8
++
++#define OSC_CTRL_STOP		BIT(0)
++
++#define USB_CTRL_PLL_LOCK	BIT(0)
++#define USB_CTRL_PLL_ON		0x004300be	/* dev clk request, PLL power, M */
++#define USB_CTRL_PLL_OFF	0x00470000
++#define USB_CTRL_CLK_EN2	BIT(18)
++#define USB_CTRL_AHB		BIT(24)
++
++#define USB_RATE		48000000
++
++struct pnx4008_usb_gate {
++	struct clk_hw hw;
++	struct pnx4008_usb_clk *usb;
++	u32 mask;		/* USB_CLK_CTRL / USB_CLK_STS bits */
++};
++
++struct pnx4008_usb_clk {
++	void __iomem *base;
++	void __iomem *usb_ctrl;
++	void __iomem *osc_ctrl;
++	spinlock_t lock;
++	unsigned int pll_users;
++	struct pnx4008_usb_gate gates[LPC32XX_USB_CLK_HOST + 1];
++	struct clk_hw_onecell_data *data;
++};
++
++#define to_gate(_hw) container_of(_hw, struct pnx4008_usb_gate, hw)
++
++static int pnx4008_usb_pll_get(struct pnx4008_usb_clk *usb)
++{
++	u32 v;
++
++	if (usb->pll_users++)
++		return 0;
++
++	writel(readl(usb->usb_ctrl) | USB_CTRL_AHB, usb->usb_ctrl);
++	writel(readl(usb->usb_ctrl) | USB_CTRL_PLL_ON, usb->usb_ctrl);
++	if (readl_poll_timeout_atomic(usb->usb_ctrl, v, v & USB_CTRL_PLL_LOCK, 10, 10000)) {
++		pr_err("pnx4008-usb-clk: no PLL lock (USB_CTRL %08x, OSC_CTRL %08x)\n", v,
++		       readl(usb->osc_ctrl));
++		usb->pll_users--;
++		writel(readl(usb->usb_ctrl) & ~(USB_CTRL_PLL_OFF | USB_CTRL_AHB), usb->usb_ctrl);
++		return -ETIMEDOUT;
++	}
++	udelay(20);
++	writel(readl(usb->usb_ctrl) | USB_CTRL_CLK_EN2, usb->usb_ctrl);
++	return 0;
++}
++
++static void pnx4008_usb_pll_put(struct pnx4008_usb_clk *usb)
++{
++	if (--usb->pll_users)
++		return;
++	writel(readl(usb->usb_ctrl) & ~USB_CTRL_AHB, usb->usb_ctrl);
++	writel(readl(usb->usb_ctrl) & ~USB_CTRL_PLL_OFF, usb->usb_ctrl);
++}
++
++static int pnx4008_usb_gate_enable(struct clk_hw *hw)
++{
++	struct pnx4008_usb_gate *g = to_gate(hw);
++	struct pnx4008_usb_clk *usb = g->usb;
++	unsigned long flags;
++	u32 v;
++	int ret;
++
++	spin_lock_irqsave(&usb->lock, flags);
++	ret = pnx4008_usb_pll_get(usb);
++	if (!ret) {
++		writel(readl(usb->base + USB_CLK_CTRL) | g->mask, usb->base + USB_CLK_CTRL);
++		ret = readl_poll_timeout_atomic(usb->base + USB_CLK_STS, v,
++						(v & g->mask) == g->mask, 1, 10000);
++		if (ret) {
++			pr_err("pnx4008-usb-clk: %s did not start: USB_CTRL %08x CTRL %08x STS %08x\n",
++			       clk_hw_get_name(hw), readl(usb->usb_ctrl),
++			       readl(usb->base + USB_CLK_CTRL), v);
++			writel(readl(usb->base + USB_CLK_CTRL) & ~g->mask,
++			       usb->base + USB_CLK_CTRL);
++			pnx4008_usb_pll_put(usb);
++		}
++	}
++	spin_unlock_irqrestore(&usb->lock, flags);
++	return ret;
++}
++
++static void pnx4008_usb_gate_disable(struct clk_hw *hw)
++{
++	struct pnx4008_usb_gate *g = to_gate(hw);
++	struct pnx4008_usb_clk *usb = g->usb;
++	unsigned long flags;
++
++	spin_lock_irqsave(&usb->lock, flags);
++	writel(readl(usb->base + USB_CLK_CTRL) & ~g->mask, usb->base + USB_CLK_CTRL);
++	pnx4008_usb_pll_put(usb);
++	spin_unlock_irqrestore(&usb->lock, flags);
++}
++
++static int pnx4008_usb_gate_is_enabled(struct clk_hw *hw)
++{
++	struct pnx4008_usb_gate *g = to_gate(hw);
++
++	return (readl(g->usb->base + USB_CLK_STS) & g->mask) == g->mask;
++}
++
++static unsigned long pnx4008_usb_gate_recalc_rate(struct clk_hw *hw, unsigned long parent)
++{
++	return USB_RATE;
++}
++
++static const struct clk_ops pnx4008_usb_gate_ops = {
++	.enable = pnx4008_usb_gate_enable,
++	.disable = pnx4008_usb_gate_disable,
++	.is_enabled = pnx4008_usb_gate_is_enabled,
++	.recalc_rate = pnx4008_usb_gate_recalc_rate,
++};
++
++static const struct {
++	const char *name;
++	u32 mask;
++} pnx4008_usb_gates[] = {
++	[LPC32XX_USB_CLK_I2C] = { "usb_i2c", BIT(2) },
++	/* The device controller also needs the AHB master clock (bit 4). */
++	[LPC32XX_USB_CLK_DEVICE] = { "usb_dev", BIT(1) | BIT(4) },
++	[LPC32XX_USB_CLK_HOST] = { "usb_host", BIT(0) | BIT(4) },
++};
++
++static int pnx4008_usb_clk_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct pnx4008_usb_clk *usb;
++	int i, ret;
++
++	usb = devm_kzalloc(dev, sizeof(*usb), GFP_KERNEL);
++	if (!usb)
++		return -ENOMEM;
++	usb->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(usb->base))
++		return PTR_ERR(usb->base);
++	usb->usb_ctrl = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(usb->usb_ctrl))
++		return PTR_ERR(usb->usb_ctrl);
++	usb->osc_ctrl = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(usb->osc_ctrl))
++		return PTR_ERR(usb->osc_ctrl);
++	spin_lock_init(&usb->lock);
++
++	if (readl(usb->osc_ctrl) & OSC_CTRL_STOP) {
++		writel(readl(usb->osc_ctrl) & ~OSC_CTRL_STOP, usb->osc_ctrl);
++		msleep(20);	/* crystal start-up */
++		dev_info(dev, "main 13 MHz oscillator started\n");
++	}
++
++	usb->data = devm_kzalloc(dev, struct_size(usb->data, hws, ARRAY_SIZE(usb->gates)),
++				 GFP_KERNEL);
++	if (!usb->data)
++		return -ENOMEM;
++	usb->data->num = ARRAY_SIZE(usb->gates);
++
++	for (i = 0; i < ARRAY_SIZE(pnx4008_usb_gates); i++) {
++		struct pnx4008_usb_gate *g = &usb->gates[i];
++		struct clk_init_data init = { };
++
++		if (!pnx4008_usb_gates[i].name) {
++			usb->data->hws[i] = ERR_PTR(-ENOENT);
++			continue;
++		}
++		init.name = pnx4008_usb_gates[i].name;
++		init.ops = &pnx4008_usb_gate_ops;
++		g->hw.init = &init;
++		g->usb = usb;
++		g->mask = pnx4008_usb_gates[i].mask;
++		ret = devm_clk_hw_register(dev, &g->hw);
++		if (ret)
++			return ret;
++		usb->data->hws[i] = &g->hw;
++	}
++
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, usb->data);
++}
++
++static const struct of_device_id pnx4008_usb_clk_of_match[] = {
++	{ .compatible = "nxp,pnx4008-usb-clk" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pnx4008_usb_clk_of_match);
++
++static struct platform_driver pnx4008_usb_clk_driver = {
++	.probe = pnx4008_usb_clk_probe,
++	.driver = {
++		.name = "pnx4008-usb-clk",
++		.of_match_table = pnx4008_usb_clk_of_match,
++	},
++};
++module_platform_driver(pnx4008_usb_clk_driver);
++
++MODULE_DESCRIPTION("NXP PNX4008 USB clocks");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+
