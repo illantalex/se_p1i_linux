@@ -19,6 +19,7 @@ here. No reflashing; `reboot` returns to Symbian.
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
 | FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
 | Memory Stick | Memory Stick Micro slot read/write (`/dev/mspblk0p1`, FAT), 4-bit mode: reads 4.2 MB/s, writes ~1.6 MB/s; polling |
+| Debian | trixie armel (sysvinit) from the Memory Stick's Linux partition, root shells on the display and serial console; ~12 MB RAM used at idle |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
 Not yet: fast or interrupt-driven Memory Stick access, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
