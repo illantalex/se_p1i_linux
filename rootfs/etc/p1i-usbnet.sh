@@ -7,7 +7,8 @@ ip link set usb0 up 2>/dev/null || exit 0
 ip addr add 192.168.7.2/24 dev usb0
 ip route add default via 192.168.7.1
 
-grep -qs '^nameserver' $R/etc/resolv.conf ||
+# A resolv.conf copied from a PC may point at a local resolver (127.0.0.53): replace it.
+grep -qs '^nameserver *[0-9]' $R/etc/resolv.conf && ! grep -qs '^nameserver *127\.' $R/etc/resolv.conf ||
 	printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\n' > $R/etc/resolv.conf
 
 # No RTC driver yet: the clock starts in 1970, and apt rejects signatures from the future.

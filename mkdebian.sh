@@ -30,6 +30,7 @@ mmdebstrap --arch=armel --variant=minbase --include=$PACKAGES --keyring=$KEYRING
 	--customize-hook='echo p1i > "$1/etc/hostname"' \
 	--customize-hook='printf "127.0.0.1\tlocalhost\n127.0.1.1\tp1i\n" > "$1/etc/hosts"' \
 	--customize-hook='mkdir -p "$1/media/card"' \
+	--customize-hook='rm -f "$1/etc/resolv.conf" && printf "nameserver 9.9.9.9\nnameserver 1.1.1.1\n" > "$1/etc/resolv.conf"' \
 	--customize-hook='cat > "$1/etc/fstab" <<EOF
 # <device>        <mount point> <type> <options>                         <dump> <pass>
 /dev/mspblk0p2    /             ext4   defaults,noatime                  0      1
