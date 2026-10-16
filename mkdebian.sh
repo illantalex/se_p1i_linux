@@ -15,7 +15,7 @@ set -e
 
 SUITE=${1:-trixie}
 OUT=debian-armel-$SUITE.tar.gz
-PACKAGES=sysvinit-core,e2fsprogs,dosfstools,procps,iproute2,nano,less,ncurses-term,psmisc
+PACKAGES=sysvinit-core,debian-archive-keyring,e2fsprogs,dosfstools,procps,iproute2,nano,less,ncurses-term,psmisc
 
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)"; exit 1; }
 command -v mmdebstrap >/dev/null || { echo "mmdebstrap is not installed"; exit 1; }
