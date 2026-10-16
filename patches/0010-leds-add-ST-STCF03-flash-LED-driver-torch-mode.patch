@@ -1,7 +1,7 @@
 From 9572d4082e41e47e6268a6b2c2d60f6556ffdaa1 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 19:32:40 +0200
-Subject: [PATCH 10/19] leds: add ST STCF03 flash LED driver (torch mode)
+Subject: [PATCH 10/21] leds: add ST STCF03 flash LED driver (torch mode)
 
 The STCF03 is an I2C-controlled buck-boost camera flash LED driver.
 Flash mode needs its TRIG input, which on the Sony Ericsson P1i is

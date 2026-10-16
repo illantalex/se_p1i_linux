@@ -1,7 +1,7 @@
 From da88e1b7e54bb05c7541515be4cfab303a2afb92 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 14 Oct 2026 20:47:34 +0200
-Subject: [PATCH 16/19] ARM: dts: pnx4008-p1i: add keypad and jog dial
+Subject: [PATCH 16/21] ARM: dts: pnx4008-p1i: add keypad and jog dial
 
 7x7 key matrix on the LPC32xx-style scanner (KEY_ROW[6]/KEY_COL[6] on
 GPIO_02/GPI_08 are still scanned by the hardware), keymap measured on the

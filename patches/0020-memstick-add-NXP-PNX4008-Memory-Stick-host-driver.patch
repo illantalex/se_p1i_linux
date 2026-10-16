@@ -1,0 +1,440 @@
+From cb348b9b9ec3b7bb8fe939f8f248cb58dcc0703c Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 18:48:30 +0200
+Subject: [PATCH 20/21] memstick: add NXP PNX4008 Memory Stick host driver
+
+The PNX4008 Memory Stick host at 0x20080000 is the Sony MS host core
+also used by the TI FlashMedia readers (tifm_ms): COMMAND, DATA, STATUS
+and SYSTEM registers with the same bits, but data goes through an 8-byte
+FIFO read or written as two words per STATUS.DRQ instead of TI's FIFO/DMA
+wrapper.
+
+Reverse-engineered from the Sony Ericsson P1i's Symbian drivers
+(pbusms.dll, vpbusms.dll): the card clock is set in MS_CTRL of the clock
+block (HCLK PLL divided down to 20 MHz serial / 40 MHz parallel, bits
+5-7 set), card power and card detect are GPIOs.
+
+This first version polls (requests run in a work item, card detect is
+sampled) and uses programmed I/O. Verified on the P1i: a Memory Stick
+PRO Duo/Micro is detected, read by mspro_block and its FAT mounted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/memstick/host/Kconfig      |   9 +
+ drivers/memstick/host/Makefile     |   1 +
+ drivers/memstick/host/pnx4008_ms.c | 374 +++++++++++++++++++++++++++++
+ 3 files changed, 384 insertions(+)
+ create mode 100644 drivers/memstick/host/pnx4008_ms.c
+
+diff --git a/drivers/memstick/host/Kconfig b/drivers/memstick/host/Kconfig
+index 4113343da..937dc7275 100644
+--- a/drivers/memstick/host/Kconfig
++++ b/drivers/memstick/host/Kconfig
+@@ -5,6 +5,15 @@
+ 
+ comment "MemoryStick Host Controller Drivers"
+ 
++config MEMSTICK_PNX4008
++	tristate "NXP PNX4008 MemoryStick host support"
++	depends on ARCH_MULTI_V5 || COMPILE_TEST
++	depends on OF && GPIOLIB
++	help
++	  Say Y here to support the Memory Stick host controller of the NXP
++	  PNX4008, as used for the Memory Stick Micro (M2) slot of the Sony
++	  Ericsson P1i.
++
+ config MEMSTICK_TIFM_MS
+ 	tristate "TI Flash Media MemoryStick Interface support "
+ 	depends on PCI
+diff --git a/drivers/memstick/host/Makefile b/drivers/memstick/host/Makefile
+index 1abaa03ee..dbdbcd659 100644
+--- a/drivers/memstick/host/Makefile
++++ b/drivers/memstick/host/Makefile
+@@ -8,3 +8,4 @@ obj-$(CONFIG_MEMSTICK_JMICRON_38X)	+= jmb38x_ms.o
+ obj-$(CONFIG_MEMSTICK_R592)		+= r592.o
+ obj-$(CONFIG_MEMSTICK_REALTEK_PCI)	+= rtsx_pci_ms.o
+ obj-$(CONFIG_MEMSTICK_REALTEK_USB)	+= rtsx_usb_ms.o
++obj-$(CONFIG_MEMSTICK_PNX4008)		+= pnx4008_ms.o
+diff --git a/drivers/memstick/host/pnx4008_ms.c b/drivers/memstick/host/pnx4008_ms.c
+new file mode 100644
+index 000000000..630d41a35
+--- /dev/null
++++ b/drivers/memstick/host/pnx4008_ms.c
+@@ -0,0 +1,374 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Memory Stick host controller of the NXP PNX4008.
++ *
++ * The controller at 0x20080000 is the Sony Memory Stick host core also found in the TI
++ * FlashMedia readers (tifm_ms.c): COMMAND, DATA, STATUS and SYSTEM registers with the same
++ * bits, but without TI's FIFO/DMA wrapper. Data goes through an 8-byte FIFO: STATUS.DRQ
++ * says when the next 8 bytes can be written or read, as two 32-bit words.
++ *
++ * Reverse-engineered from the Sony Ericsson P1i's Symbian drivers (pbusms.dll,
++ * vpbusms.dll): the card clock comes from MS_CTRL in the clock block (HCLK PLL divided
++ * down, bits 6-7 set, bit 5 = clock enable), card power and card detect are board GPIOs.
++ *
++ * This version polls: requests run in a work item, card detect is sampled periodically.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/memstick.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/scatterlist.h>
++#include <linux/slab.h>
++#include <linux/workqueue.h>
++
++#define MS_COMMAND		0x00	/* TPC << 12 | data length */
++#define MS_DATA			0x04
++#define MS_STATUS		0x08
++#define MS_SYSTEM		0x0c
++
++#define MS_STAT_DRQ		0x4000
++#define MS_STAT_MSINT		0x2000
++#define MS_STAT_RDY		0x1000
++#define MS_STAT_CRC		0x0200
++#define MS_STAT_TOE		0x0100
++#define MS_STAT_CED		0x0008
++#define MS_STAT_ERR		0x0004
++#define MS_STAT_BRQ		0x0002
++#define MS_STAT_CNK		0x0001
++
++#define MS_SYS_RESET		0x8000
++#define MS_SYS_SRAC		0x4000
++#define MS_SYS_INTCLR		0x0800
++#define MS_SYS_FCLR		0x0200
++#define MS_SYS_DAM		0x0080
++#define MS_SYS_DRM		0x0040
++#define MS_SYS_REI		0x0010
++#define MS_SYS_REO		0x0008
++#define MS_SYS_SERIAL		(MS_SYS_SRAC | MS_SYS_REI)
++
++/* MS_CTRL in the clock block */
++#define MS_CTRL_CLK_EN		BIT(5)
++#define MS_CTRL_ON		(BIT(7) | BIT(6))
++#define MS_CTRL_DIV_MASK	0xf
++
++#define MS_SERIAL_HZ		20000000
++#define MS_PAR4_HZ		40000000
++
++#define MS_FIFO_TIMEOUT_US	100000
++#define MS_CMD_TIMEOUT_US	500000
++#define MS_CD_POLL		msecs_to_jiffies(500)
++
++struct pnx4008_ms {
++	struct device *dev;
++	struct memstick_host *msh;
++	void __iomem *base;
++	void __iomem *ms_ctrl;
++	struct clk *pll;
++	struct gpio_desc *power;
++	struct gpio_desc *cd;
++	struct work_struct req_work;
++	struct delayed_work cd_work;
++	struct memstick_request *req;
++	u8 *buf;
++	u32 sys;
++	bool present;
++	bool powered;
++	bool no_msint;
++};
++
++static void pnx4008_ms_set_clock(struct pnx4008_ms *host, unsigned long hz)
++{
++	unsigned long rate = clk_get_rate(host->pll);
++	u32 div = clamp_val(DIV_ROUND_UP(rate, hz), 1, MS_CTRL_DIV_MASK);
++	u32 v = readl(host->ms_ctrl);
++
++	v &= ~(MS_CTRL_ON | MS_CTRL_DIV_MASK);
++	writel(v | MS_CTRL_ON | MS_CTRL_CLK_EN | div, host->ms_ctrl);
++	dev_dbg(host->dev, "card clock %lu Hz\n", rate / div);
++}
++
++static void pnx4008_ms_reset(struct pnx4008_ms *host)
++{
++	u32 v;
++
++	writel(MS_SYS_RESET, host->base + MS_SYSTEM);
++	if (readl_poll_timeout_atomic(host->base + MS_SYSTEM, v, !(v & MS_SYS_RESET), 1, 1000))
++		dev_warn(host->dev, "reset did not complete\n");
++	v = readl(host->base + MS_SYSTEM) & ~MS_SYS_DAM;
++	host->sys = (v | MS_SYS_DRM | MS_SYS_REO) & ~MS_SYS_SERIAL;
++}
++
++static int pnx4008_ms_wait(struct pnx4008_ms *host, u32 bits, u32 *status, bool atomic,
++			   unsigned int timeout_us)
++{
++	u32 st;
++	int ret;
++
++	if (atomic)
++		ret = readl_poll_timeout_atomic(host->base + MS_STATUS, st,
++						st & (bits | MS_STAT_TOE | MS_STAT_CRC), 0,
++						timeout_us);
++	else
++		ret = readl_poll_timeout(host->base + MS_STATUS, st,
++					 st & (bits | MS_STAT_TOE | MS_STAT_CRC), 20, timeout_us);
++	*status = st;
++	if (ret)
++		return -ETIME;
++	if (st & bits)
++		return 0;
++	return st & MS_STAT_TOE ? -ETIME : -EILSEQ;
++}
++
++static int pnx4008_ms_xfer(struct pnx4008_ms *host, u8 *buf, unsigned int len, bool write)
++{
++	unsigned int off;
++	u32 st, w[2];
++	int ret;
++
++	for (off = 0; off < len; off += 8) {
++		unsigned int n = min(len - off, 8U);
++
++		ret = pnx4008_ms_wait(host, MS_STAT_DRQ, &st, true, MS_FIFO_TIMEOUT_US);
++		if (ret)
++			return ret;
++		if (write) {
++			w[0] = w[1] = 0;
++			memcpy(w, buf + off, n);
++			writel(w[0], host->base + MS_DATA);
++			writel(w[1], host->base + MS_DATA);
++		} else {
++			w[0] = readl(host->base + MS_DATA);
++			w[1] = readl(host->base + MS_DATA);
++			memcpy(buf + off, w, n);
++		}
++	}
++	return 0;
++}
++
++static void pnx4008_ms_execute(struct pnx4008_ms *host, struct memstick_request *req)
++{
++	bool write = req->data_dir == WRITE;
++	unsigned int len;
++	u8 *buf;
++	u32 st;
++	int ret;
++
++	if (req->long_data) {
++		len = req->sg.length;
++		if (len > PAGE_SIZE) {
++			req->error = -EINVAL;
++			return;
++		}
++		buf = host->buf;
++		if (write)
++			sg_copy_to_buffer(&req->sg, 1, buf, len);
++	} else {
++		len = req->data_len;
++		buf = req->data;
++	}
++
++	writel(host->sys | MS_SYS_INTCLR | MS_SYS_FCLR, host->base + MS_SYSTEM);
++	writel(host->sys, host->base + MS_SYSTEM);
++	writel((req->tpc & 0xf) << 12 | len, host->base + MS_COMMAND);
++
++	ret = len ? pnx4008_ms_xfer(host, buf, len, write) : 0;
++	if (!ret)
++		ret = pnx4008_ms_wait(host, MS_STAT_RDY, &st, false, MS_CMD_TIMEOUT_US);
++	/*
++	 * Not known yet whether STATUS.MSINT is reported in serial mode, where the card core
++	 * also reads INT with GET_INT. If it never comes, say so once and stop waiting.
++	 */
++	if (!ret && req->need_card_int && !host->no_msint) {
++		ret = pnx4008_ms_wait(host, MS_STAT_MSINT, &st, false, MS_CMD_TIMEOUT_US);
++		if (ret == -ETIME && !(st & MS_STAT_TOE)) {
++			dev_info(host->dev, "no MSINT after TPC %x (status %04x), not waiting for it\n",
++				 req->tpc, st);
++			host->no_msint = true;
++			ret = 0;
++		}
++	}
++
++	st = readl(host->base + MS_STATUS);
++	req->int_reg = (st & MS_STAT_CNK) | ((st << 4) & 0xe0);
++	req->error = ret;
++	if (ret)
++		dev_dbg(host->dev, "TPC %x len %u: error %d, status %04x\n", req->tpc, len, ret,
++			st);
++	else if (req->long_data && !write)
++		sg_copy_from_buffer(&req->sg, 1, buf, len);
++}
++
++static void pnx4008_ms_req_work(struct work_struct *work)
++{
++	struct pnx4008_ms *host = container_of(work, struct pnx4008_ms, req_work);
++
++	while (!memstick_next_req(host->msh, &host->req)) {
++		if (!host->present || !host->powered)
++			host->req->error = -ETIME;
++		else
++			pnx4008_ms_execute(host, host->req);
++	}
++}
++
++static void pnx4008_ms_request(struct memstick_host *msh)
++{
++	struct pnx4008_ms *host = memstick_priv(msh);
++
++	schedule_work(&host->req_work);
++}
++
++static int pnx4008_ms_set_param(struct memstick_host *msh, enum memstick_param param,
++				int value)
++{
++	struct pnx4008_ms *host = memstick_priv(msh);
++
++	switch (param) {
++	case MEMSTICK_POWER:
++		if (value == MEMSTICK_POWER_ON) {
++			gpiod_set_value_cansleep(host->power, 1);
++			msleep(20);
++			pnx4008_ms_set_clock(host, MS_SERIAL_HZ);
++			pnx4008_ms_reset(host);
++			host->sys |= MS_SYS_SERIAL;
++			writel(host->sys, host->base + MS_SYSTEM);
++			host->powered = true;
++		} else if (value == MEMSTICK_POWER_OFF) {
++			host->powered = false;
++			writel(readl(host->ms_ctrl) &
++			       ~(MS_CTRL_ON | MS_CTRL_CLK_EN | MS_CTRL_DIV_MASK), host->ms_ctrl);
++			gpiod_set_value_cansleep(host->power, 0);
++		} else {
++			return -EINVAL;
++		}
++		break;
++	case MEMSTICK_INTERFACE:
++		if (value == MEMSTICK_SERIAL) {
++			host->sys |= MS_SYS_SERIAL;
++			pnx4008_ms_set_clock(host, MS_SERIAL_HZ);
++		} else if (value == MEMSTICK_PAR4) {
++			host->sys &= ~MS_SYS_SERIAL;
++			pnx4008_ms_set_clock(host, MS_PAR4_HZ);
++		} else {
++			return -EINVAL;
++		}
++		writel(host->sys, host->base + MS_SYSTEM);
++		break;
++	}
++	return 0;
++}
++
++static void pnx4008_ms_cd_work(struct work_struct *work)
++{
++	struct pnx4008_ms *host = container_of(to_delayed_work(work), struct pnx4008_ms,
++					       cd_work);
++	bool present = gpiod_get_value_cansleep(host->cd) > 0;
++
++	if (present != host->present) {
++		host->present = present;
++		dev_info(host->dev, "card %s\n", present ? "inserted" : "removed");
++		memstick_detect_change(host->msh);
++	}
++	schedule_delayed_work(&host->cd_work, MS_CD_POLL);
++}
++
++static int pnx4008_ms_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct memstick_host *msh;
++	struct pnx4008_ms *host;
++	int ret;
++
++	msh = memstick_alloc_host(sizeof(*host), dev);
++	if (!msh)
++		return -ENOMEM;
++	host = memstick_priv(msh);
++	host->dev = dev;
++	host->msh = msh;
++
++	host->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(host->base)) {
++		ret = PTR_ERR(host->base);
++		goto err_free;
++	}
++	host->ms_ctrl = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(host->ms_ctrl)) {
++		ret = PTR_ERR(host->ms_ctrl);
++		goto err_free;
++	}
++	host->pll = devm_clk_get(dev, NULL);
++	if (IS_ERR(host->pll)) {
++		ret = dev_err_probe(dev, PTR_ERR(host->pll), "no clock\n");
++		goto err_free;
++	}
++	host->power = devm_gpiod_get(dev, "power", GPIOD_OUT_LOW);
++	if (IS_ERR(host->power)) {
++		ret = dev_err_probe(dev, PTR_ERR(host->power), "no power GPIO\n");
++		goto err_free;
++	}
++	host->cd = devm_gpiod_get(dev, "cd", GPIOD_IN);
++	if (IS_ERR(host->cd)) {
++		ret = dev_err_probe(dev, PTR_ERR(host->cd), "no card-detect GPIO\n");
++		goto err_free;
++	}
++	host->buf = devm_kmalloc(dev, PAGE_SIZE, GFP_KERNEL);
++	if (!host->buf) {
++		ret = -ENOMEM;
++		goto err_free;
++	}
++
++	INIT_WORK(&host->req_work, pnx4008_ms_req_work);
++	INIT_DELAYED_WORK(&host->cd_work, pnx4008_ms_cd_work);
++	msh->request = pnx4008_ms_request;
++	msh->set_param = pnx4008_ms_set_param;
++	platform_set_drvdata(pdev, msh);
++
++	ret = memstick_add_host(msh);
++	if (ret)
++		goto err_free;
++
++	schedule_delayed_work(&host->cd_work, 0);
++	dev_info(dev, "Memory Stick host, card clock from %lu Hz\n", clk_get_rate(host->pll));
++	return 0;
++
++err_free:
++	memstick_free_host(msh);
++	return ret;
++}
++
++static int pnx4008_ms_remove(struct platform_device *pdev)
++{
++	struct memstick_host *msh = platform_get_drvdata(pdev);
++	struct pnx4008_ms *host = memstick_priv(msh);
++
++	cancel_delayed_work_sync(&host->cd_work);
++	host->present = false;
++	memstick_remove_host(msh);
++	cancel_work_sync(&host->req_work);
++	memstick_free_host(msh);
++	return 0;
++}
++
++static const struct of_device_id pnx4008_ms_of_match[] = {
++	{ .compatible = "nxp,pnx4008-ms" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pnx4008_ms_of_match);
++
++static struct platform_driver pnx4008_ms_driver = {
++	.probe = pnx4008_ms_probe,
++	.remove = pnx4008_ms_remove,
++	.driver = {
++		.name = "pnx4008-ms",
++		.of_match_table = pnx4008_ms_of_match,
++	},
++};
++module_platform_driver(pnx4008_ms_driver);
++
++MODULE_DESCRIPTION("NXP PNX4008 Memory Stick host driver");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

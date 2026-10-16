@@ -1,7 +1,7 @@
 From 8821782ab59450b8214b4b1850286c9c99cd1e6c Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 12 Oct 2026 23:40:31 +0200
-Subject: [PATCH 02/19] clocksource: add PNX4008 millisecond timer driver
+Subject: [PATCH 02/21] clocksource: add PNX4008 millisecond timer driver
 
 The PNX4008 has no LPC32xx-style timers 0-5, so timer-lpc32xx does not
 apply. Add a driver for its millisecond timer (MSTIM, also present on

@@ -1,0 +1,69 @@
+From 6b7f4743f0440479d7193a6398774515c63fb6bc Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 18:48:30 +0200
+Subject: [PATCH 21/21] ARM: dts: pnx4008-p1i: add the Memory Stick host
+
+Map the AHB peripheral window (0x20000000) on the soc bus, add the
+208 MHz HCLK PLL the card clock is divided from, and describe the host
+with its MS_CTRL clock register, card power (GPO_06) and card detect
+(GPI_00, active low).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 2f81ca1f1..211b125a9 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -124,6 +124,13 @@ periph_clk: periph-clk {
+ 		 * 0x0001601f (direct mode, M = 16: 13 MHz * 16 = 208 MHz), HCLKDIV_CTRL 0x3d
+ 		 * (HCLK = PLL / 2, PERIPH_CLK = PLL / 16 = 13 MHz).
+ 		 */
++		/* HCLK PLL output (208 MHz, see below); the Memory Stick clock divides it down. */
++		hclk_pll: hclk-pll {
++			compatible = "fixed-clock";
++			#clock-cells = <0>;
++			clock-frequency = <208000000>;
++		};
++
+ 		hclk: hclk {
+ 			compatible = "fixed-clock";
+ 			#clock-cells = <0>;
+@@ -171,7 +178,9 @@ soc {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+-		ranges = <0x40000000 0x40000000 0x10000000>;
++		/* AHB peripherals (Memory Stick host) and APB peripherals */
++		ranges = <0x20000000 0x20000000 0x00100000>,
++			 <0x40000000 0x40000000 0x10000000>;
+ 
+ 		/* Main interrupt controller; register layout ER RSR SR APR ATR ITR (probe). */
+ 		mic: interrupt-controller@40008000 {
+@@ -322,6 +331,21 @@ stmpe_gpio: gpio {
+ 		 * 4 = GPI_P3 inputs, 5 = GPO_P3 outputs. Verified: GPO_n is bit n of
+ 		 * P3_OUTP_SET/CLR/STATE (GPO_21 = CAM_POW, GPO_11 = CAM_RST#).
+ 		 */
++		/*
++		 * Memory Stick host (Sony MS core, as in tifm_ms), from Symbian's pbusms.dll and
++		 * vpbusms.dll: registers at virtual 0x63680000 = 0x20080000, interrupt 12. The
++		 * card clock is set in MS_CTRL (0x40004080) as PLL / ceil(PLL / 20 MHz) with bits
++		 * 5-7 set. Card power is GPO_06 (MSMICRO_POW), card detect GPI_00 (low = card in).
++		 */
++		memstick@20080000 {
++			compatible = "nxp,pnx4008-ms";
++			reg = <0x20080000 0x1000>, <0x40004080 0x4>;
++			interrupts = <12 IRQ_TYPE_LEVEL_LOW>;
++			clocks = <&hclk_pll>;
++			power-gpios = <&gpio 5 6 GPIO_ACTIVE_HIGH>;
++			cd-gpios = <&gpio 4 0 GPIO_ACTIVE_LOW>;
++		};
++
+ 		gpio: gpio@40028000 {
+ 			compatible = "nxp,lpc3220-gpio";
+ 			reg = <0x40028000 0x1000>;
+-- 
+2.53.0
+

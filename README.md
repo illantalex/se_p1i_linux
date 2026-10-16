@@ -18,9 +18,10 @@ here. No reflashing; `reboot` returns to Symbian.
 | Core | interrupts (MIC/SIC1/SIC2), tickless MSTIM clocksource/clockevent, watchdog reboot |
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
 | FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
+| Memory Stick | Memory Stick Micro slot readable (`/dev/mspblk0p1`, FAT); polling, serial mode, writes untested |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
-Not yet: Memory Stick storage, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
+Not yet: fast or interrupt-driven Memory Stick access, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
 baseband, and power management. The kernel does not initialise the display controller or the
 panel itself, so it relies on starting from Symbian.
 
@@ -28,7 +29,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 19 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 21 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
@@ -40,7 +41,7 @@ panel itself, so it relies on starting from Symbian.
 
 Kernel patches, in short:
 
-- new drivers: PNX4008 MSTIM timer, ST STCF03 flash LED, jog dial;
+- new drivers: PNX4008 MSTIM timer, PNX4008 Memory Stick host, ST STCF03 flash LED, jog dial;
 - `lpc32xx` irqchip, GPIO, PWM, key scanner, `i2c-pnx` and the PNX4008 watchdog enabled for
   ARMv5 multiplatform (the PNX4008 shares these blocks with the LPC32xx, but
   `ARCH_LPC32XX` itself does not boot here);
