@@ -1,7 +1,7 @@
 From e47706f7610ace9514e4375a1a3f05e1324fdd43 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 12 Oct 2026 23:40:31 +0200
-Subject: [PATCH 03/21] watchdog: pnx4008: allow on ARMv5 multiplatform without
+Subject: [PATCH 03/22] watchdog: pnx4008: allow on ARMv5 multiplatform without
  ARCH_LPC32XX
 
 The driver matches "nxp,pnx4008-wdt" and also provides the restart

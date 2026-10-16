@@ -1,0 +1,61 @@
+From d4edf0244bc5e6951f15c6866e28b70bd9e0746e Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Fri, 16 Oct 2026 18:58:42 +0200
+Subject: [PATCH 22/22] memstick: pnx4008: offer 4-bit parallel mode
+
+Advertise MEMSTICK_CAP_PAR4 (unless pnx4008_ms.par4=0); set_param
+already switches the host to parallel at 40 MHz (34.7 MHz from the
+208 MHz PLL). Log the card clock on changes.
+
+Verified on the P1i: the card switches to 4-bit mode, reads are correct
+(md5 of a 3 MB file) and go from 1.9 to 4.2 MB/s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/memstick/host/pnx4008_ms.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/memstick/host/pnx4008_ms.c b/drivers/memstick/host/pnx4008_ms.c
+index 630d41a35..95de69a52 100644
+--- a/drivers/memstick/host/pnx4008_ms.c
++++ b/drivers/memstick/host/pnx4008_ms.c
+@@ -12,6 +12,7 @@
+  * down, bits 6-7 set, bit 5 = clock enable), card power and card detect are board GPIOs.
+  *
+  * This version polls: requests run in a work item, card detect is sampled periodically.
++ * 4-bit parallel mode is offered to the card unless pnx4008_ms.par4=0.
+  */
+ 
+ #include <linux/clk.h>
+@@ -60,6 +61,10 @@
+ #define MS_SERIAL_HZ		20000000
+ #define MS_PAR4_HZ		40000000
+ 
++static bool par4 = true;
++module_param(par4, bool, 0444);
++MODULE_PARM_DESC(par4, "Offer 4-bit parallel mode to the card (default: on)");
++
+ #define MS_FIFO_TIMEOUT_US	100000
+ #define MS_CMD_TIMEOUT_US	500000
+ #define MS_CD_POLL		msecs_to_jiffies(500)
+@@ -90,7 +95,7 @@ static void pnx4008_ms_set_clock(struct pnx4008_ms *host, unsigned long hz)
+ 
+ 	v &= ~(MS_CTRL_ON | MS_CTRL_DIV_MASK);
+ 	writel(v | MS_CTRL_ON | MS_CTRL_CLK_EN | div, host->ms_ctrl);
+-	dev_dbg(host->dev, "card clock %lu Hz\n", rate / div);
++	dev_info(host->dev, "card clock %lu Hz\n", rate / div);
+ }
+ 
+ static void pnx4008_ms_reset(struct pnx4008_ms *host)
+@@ -326,6 +331,8 @@ static int pnx4008_ms_probe(struct platform_device *pdev)
+ 	INIT_DELAYED_WORK(&host->cd_work, pnx4008_ms_cd_work);
+ 	msh->request = pnx4008_ms_request;
+ 	msh->set_param = pnx4008_ms_set_param;
++	if (par4)
++		msh->caps |= MEMSTICK_CAP_PAR4;
+ 	platform_set_drvdata(pdev, msh);
+ 
+ 	ret = memstick_add_host(msh);
+-- 
+2.53.0
+

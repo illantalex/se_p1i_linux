@@ -18,7 +18,7 @@ here. No reflashing; `reboot` returns to Symbian.
 | Core | interrupts (MIC/SIC1/SIC2), tickless MSTIM clocksource/clockevent, watchdog reboot |
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
 | FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
-| Memory Stick | Memory Stick Micro slot readable (`/dev/mspblk0p1`, FAT); polling, serial mode, writes untested |
+| Memory Stick | Memory Stick Micro slot readable (`/dev/mspblk0p1`, FAT), 4-bit mode, 4.2 MB/s; polling, writes untested |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
 Not yet: fast or interrupt-driven Memory Stick access, USB, audio codec, camera, Wi-Fi, touchscreen, the GSM
@@ -29,7 +29,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 21 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 22 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
