@@ -37,7 +37,7 @@ $BB_MAKE oldconfig </dev/null >/dev/null
 $BB_MAKE -j"$JOBS"
 $BB_MAKE CONFIG_PREFIX="$TOP/rootfs" install >/dev/null
 mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/tmp rootfs/root
-ln -sfn bin/busybox rootfs/init
+install -m 755 initramfs-init.sh rootfs/init
 
 echo "=== libgpiod $GPIOD_VER tools + own tools"
 if [ ! -d "$GPIOD" ]; then

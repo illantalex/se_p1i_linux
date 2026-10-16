@@ -36,6 +36,8 @@ panel itself, so it relies on starting from Symbian.
 | `rootfs/` | `inittab` (shells on `ttyS0` and `tty1`), `rcS`, `root/regdump.sh` |
 | `initramfs.list` | Initramfs entries that need root to create (`/dev/console`) |
 | `gpiod-multi.c`, `memdump.c`, `evdump.c`, `p1ikbd.c`, `dsptool.c` | One static multi-call binary: libgpiod tools, a `/dev/mem` dumper, an input-event viewer, the keypad daemon, audio DSP experiments |
+| `initramfs-init.sh` | `/init`: switches to a Linux root on the Memory Stick (partition 2) if there is one, else runs the BusyBox system |
+| `mkdebian.sh` | Builds a minimal Debian armel root (sysvinit) as a tarball, on the PC |
 | `capture.sh` | Runs a command on the phone's serial shell and saves the output on the PC |
 | `build.sh` | Builds everything into `build/zImage-p1i` |
 
@@ -95,6 +97,23 @@ When changing the kernel, commit in `linux/` and refresh the series:
 ```sh
 rm patches/*.patch && git -C linux format-patch -o ../patches v6.1.2..p1i
 ```
+
+## Debian on the Memory Stick
+
+The card can hold a Linux root on a second partition next to Symbian's FAT16. Symbian only
+accepts a partition table whose first entry has the boot flag and keeps working with a second
+partition behind it, but its "format memory card" rewrites the whole card (deleting the Linux
+partition). Partitioning is done from Linux on the phone, since over USB Symbian only exports
+the FAT partition.
+
+1. On the PC: `sudo ./mkdebian.sh` (needs `mmdebstrap` and qemu ARM emulation) and copy the
+   resulting `debian-armel-trixie.tar.gz` to the card.
+2. On the phone, with the Linux partition at `/dev/mspblk0p2`:
+   `mount /dev/mspblk0p2 /newroot && mkdir -p /tmp/card && mount /dev/mspblk0p1 /tmp/card &&
+   tar -xzf /tmp/card/debian-armel-trixie.tar.gz -C /newroot && sync`
+3. Reboot: `/init` finds `/sbin/init` on partition 2 and switches to Debian, with root shells
+   on the display and the serial console. An empty file `other/noroot` on the card keeps the
+   BusyBox system instead.
 
 ## Hardware notes
 

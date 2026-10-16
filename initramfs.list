@@ -5,3 +5,5 @@ dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
 # Mount point for the Memory Stick and other file systems
 dir /mnt 0755 0 0
+# Where /init mounts the Linux root from the card before switch_root
+dir /newroot 0755 0 0
