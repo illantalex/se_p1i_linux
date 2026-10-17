@@ -20,10 +20,13 @@
  *   dsptool fill SHARED AREA BYTES STEP write a sine into BYTES of shared area AREA, no
  *                                      handshake: STEP 0 = silence, 1 = 1 kHz at 48 kHz,
  *                                      2 = 2 kHz, ... (16-bit, same value in both channels)
- *   dsptool tone SHARED AREA HALF SEMIN SEMOUT MS
+ *   dsptool tone SHARED AREA HALF SEMIN SEMOUT MS [STEP [PMASK]]
  *                                      play a 1 kHz tone through shared area AREA (ping-pong,
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
- *                                      half whenever the DSP raises SEMIN, then set SEMOUT
+ *                                      half whenever the DSP raises SEMIN, then set SEMOUT;
+ *                                      STEP n = n kHz (default 1), PMASK default 0xffff
+ *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
+ *                                      snapshot from Symbian) to the same offsets
  *   dsptool load FILE PHYS             copy FILE to physical address PHYS (SDRAM reserved
  *                                      for the DSP) and verify it
  *   dsptool modules SHARED ADDR1 ADDR2 message 12: tell the DSP where the codec module and
@@ -411,7 +414,7 @@ static void fill(volatile uint16_t *sh, int area, unsigned int bytes, unsigned i
 }
 
 static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
-		 int ms)
+		 int ms, unsigned int step, uint16_t pmask)
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
 	unsigned int frames = half / 4, i, cur = 0, phase = 0, fills = 0;
@@ -422,9 +425,9 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 		0, -1305, -2588, -3827, -5000, -6088, -7071, -7934, -8660, -9239, -9659, -9914,
 		-10000, -9914, -9659, -9239, -8660, -7934, -7071, -6088, -5000, -3827, -2588, -1305 };
 
-	wr(PMASK, 0xffff);
+	wr(PMASK, pmask);
 	for (cur = 0; cur < 2; cur++)
-		for (i = 0; i < frames; i++, phase = (phase + 1) % 48)
+		for (i = 0; i < frames; i++, phase = (phase + step) % 48)
 			base[cur * half / 2 + 2 * i] = base[cur * half / 2 + 2 * i + 1] = sine[phase];
 	psem(1 << semout);
 	cur = 0;
@@ -436,14 +439,30 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 			continue;
 		}
 		wr(PCLEAR, 1 << semin);
-		for (i = 0; i < frames; i++, phase = (phase + 1) % 48)
+		for (i = 0; i < frames; i++, phase = (phase + step) % 48)
 			base[cur * half / 2 + 2 * i] = base[cur * half / 2 + 2 * i + 1] = sine[phase];
 		psem(1 << semout);
 		cur ^= 1;
 		fills++;
 	}
-	printf("tone: %u half buffers filled in %d ms (expected about %u at 48 kHz)\n", fills,
-	       ms, ms * 48 / frames);
+	printf("tone: %u half buffers filled in %d ms (expected about %u at 48 kHz), PSEM %04x "
+	       "SEM %04x\n", fills, ms, ms * 48 / frames, rd(PSEM), rd(SEM));
+	wr(PMASK, 0xffff);
+}
+
+static int restore(volatile uint16_t *sh, const char *path, unsigned int off, unsigned int len)
+{
+	size_t words, i;
+	uint16_t *buf = load_file(path, &words);
+
+	if ((off | len) & 1 || off + len > words * 2 || off + len > SHARED_SIZE) {
+		fprintf(stderr, "restore: bad range\n");
+		return 1;
+	}
+	for (i = off / 2; i < (off + len) / 2; i++)
+		sh[i] = buf[i];
+	printf("restored 0x%x-0x%x from %s\n", off, off + len - 1, path);
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -453,8 +472,8 @@ int main(int argc, char **argv)
 	if (argc < 2) {
 		fprintf(stderr, "usage: dsptool regs | rep | boot CODE DATA SHARED_PHYS | "
 			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
-			"       tone SHARED AREA HALF SEMIN SEMOUT MS | load FILE PHYS |\n"
-			"       modules SHARED ADDR1 ADDR2\n");
+			"       tone SHARED AREA HALF SEMIN SEMOUT MS [STEP [PMASK]] | load FILE PHYS |\n"
+			"       modules SHARED ADDR1 ADDR2 | restore SHARED FILE OFF LEN\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -484,9 +503,13 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "fill") && argc == 6) {
 		fill(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 		     strtoul(argv[4], NULL, 0), atoi(argv[5]));
-	} else if (!strcmp(argv[1], "tone") && argc == 8) {
+	} else if (!strcmp(argv[1], "tone") && argc >= 8) {
 		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
-		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]));
+		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]),
+		     argc > 8 ? atoi(argv[8]) : 1, argc > 9 ? strtoul(argv[9], NULL, 0) : 0xffff);
+	} else if (!strcmp(argv[1], "restore") && argc == 6) {
+		return restore(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3],
+			       strtoul(argv[4], NULL, 0), strtoul(argv[5], NULL, 0));
 	} else if (!strcmp(argv[1], "load") && argc == 4) {
 		return load_phys(fd, argv[2], strtoul(argv[3], NULL, 0));
 	} else if (!strcmp(argv[1], "modules") && argc == 5) {
