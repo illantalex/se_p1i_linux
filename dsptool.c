@@ -65,6 +65,8 @@
 
 #define PCLEAR	0x18
 
+#define SHARED_SIZE	0x6000	/* dspextension's DSharedIoBuffer */
+
 static const uint32_t area_off[8] = { 0x1000, 0x1E00, 0x2600, 0x0000, 0x2E00, 0x3C40, 0x4440,
 				      0x4C40 };
 
@@ -245,16 +247,20 @@ static void boot(const char *code_path, const char *data_path, uint32_t shared, 
 	uint16_t *code = load_file(code_path, &nc);
 	uint16_t *data = load_file(data_path, &nd);
 
-	/* Zero the shared buffer so whatever the DSP writes there stands out. */
+	/*
+	 * Zero the shared buffer so whatever the DSP writes there stands out. Only its 0x6000
+	 * bytes: Symbian puts it at the start of the internal SRAM (0x08000000), whose rest is
+	 * used by others (clearing all 64 KB turned the display off).
+	 */
 	{
-		void *sh = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
+		void *sh = mmap(NULL, SHARED_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
 
 		if (sh == MAP_FAILED) {
 			perror("mmap shared");
 			exit(1);
 		}
-		memset(sh, 0, 0x10000);
-		munmap(sh, 0x10000);
+		memset(sh, 0, SHARED_SIZE);
+		munmap(sh, SHARED_SIZE);
 	}
 	printf("before:\n");
 	regs();
@@ -281,7 +287,7 @@ static void boot(const char *code_path, const char *data_path, uint32_t shared, 
 
 static volatile uint16_t *map_shared(int fd, uint32_t shared)
 {
-	void *p = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
+	void *p = mmap(NULL, SHARED_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
 
 	if (p == MAP_FAILED) {
 		perror("mmap shared");
