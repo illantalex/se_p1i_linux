@@ -61,5 +61,5 @@ a24 0
 fev
 desc
 echo ">>> WAV, 2016-byte halves, semaphore 2"
-timeout 25 $T play $SH 0 2016 2 2 $WAV
+$T play $SH 0 2016 2 2 $WAV 15000
 desc

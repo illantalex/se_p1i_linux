@@ -25,9 +25,11 @@
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
  *                                      half whenever the DSP raises SEMIN, then set SEMOUT;
  *                                      STEP n = n kHz (default 1), PMASK default 0xffff
- *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE
+ *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE [MS]
  *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
  *                                      decoder) through area AREA like tone, until its end
+ *                                      or MS milliseconds (default 20000); prints the
+ *                                      requests per second
  *   dsptool save SHARED FILE           write the shared buffer (0x6000 bytes) to FILE
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
@@ -474,13 +476,14 @@ static int play_fill(volatile uint16_t *half, FILE *f, unsigned int bytes)
 }
 
 static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
-		const char *path)
+		const char *path, int ms)
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
 	FILE *f = fopen(path, "rb");
 	unsigned int cur, fills = 0, left = 2;
 	uint16_t others = 0;
-	long start = now_ms(), last = start;
+	long start = now_ms(), last = start, sec = start;
+	unsigned int sec_fills = 0;
 
 	if (!f || half > 4096 || half & 1) {
 		fprintf(stderr, "play: cannot open %s or bad half size\n", path);
@@ -492,8 +495,16 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 	psem(1 << semout);
 	cur = 0;
 	/* Until the file is done and both halves played, or 3 s without a request. */
-	while (left && now_ms() - last < 3000) {
+	while (left && now_ms() - last < 3000 && now_ms() - start < ms) {
 		uint16_t s = rd(SEM);
+
+		if (now_ms() - sec >= 1000) {
+			printf("  %2ld s: %u requests, SEM %04x, other bits so far %04x\n",
+			       (now_ms() - start) / 1000, fills - sec_fills, s, others);
+			fflush(stdout);
+			sec += 1000;
+			sec_fills = fills;
+		}
 
 		if (s & ~(1 << semin)) {
 			others |= s & ~(1 << semin);
@@ -513,7 +524,8 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 	}
 	printf("play: %u halves of %u bytes in %ld ms (%ld bytes/s), %s, other bits %04x\n",
 	       fills, half, now_ms() - start, fills * half * 1000L / (now_ms() - start + 1),
-	       left ? "stalled (3 s without a request)" : "file done", others);
+	       !left ? "file done" : now_ms() - start >= ms ? "time up" :
+	       "stalled (3 s without a request)", others);
 	fclose(f);
 	wr(PMASK, 0xffff);
 	return 0;
@@ -595,9 +607,10 @@ int main(int argc, char **argv)
 		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]),
 		     argc > 8 ? atoi(argv[8]) : 1, argc > 9 ? strtoul(argv[9], NULL, 0) : 0xffff);
-	} else if (!strcmp(argv[1], "play") && argc == 8) {
+	} else if (!strcmp(argv[1], "play") && argc >= 8) {
 		return play(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
-			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7]);
+			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7],
+			    argc > 8 ? atoi(argv[8]) : 20000);
 	} else if (!strcmp(argv[1], "save") && argc == 4) {
 		return save(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3]);
 	} else if (!strcmp(argv[1], "restore") && argc == 6) {
