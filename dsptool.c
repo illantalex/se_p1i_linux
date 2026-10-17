@@ -25,6 +25,9 @@
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
  *                                      half whenever the DSP raises SEMIN, then set SEMOUT;
  *                                      STEP n = n kHz (default 1), PMASK default 0xffff
+ *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE
+ *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
+ *                                      decoder) through area AREA like tone, until its end
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
  *   dsptool load FILE PHYS             copy FILE to physical address PHYS (SDRAM reserved
@@ -457,6 +460,64 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 	wr(PMASK, 0xffff);
 }
 
+/* Copy the next HALF bytes of the file into half CUR (zeros after its end). */
+static int play_fill(volatile uint16_t *half, FILE *f, unsigned int bytes)
+{
+	uint16_t buf[2048];
+	size_t n = fread(buf, 1, bytes, f), i;
+
+	memset((uint8_t *)buf + n, 0, bytes - n);
+	for (i = 0; i < bytes / 2; i++)
+		half[i] = buf[i];
+	return n > 0;
+}
+
+static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
+		const char *path)
+{
+	volatile uint16_t *base = sh + area_off[area] / 2;
+	FILE *f = fopen(path, "rb");
+	unsigned int cur, fills = 0, left = 2;
+	uint16_t others = 0;
+	long start = now_ms(), last = start;
+
+	if (!f || half > 4096 || half & 1) {
+		fprintf(stderr, "play: cannot open %s or bad half size\n", path);
+		return 1;
+	}
+	wr(PMASK, 0xbff8);
+	play_fill(base, f, half);
+	play_fill(base + half / 2, f, half);
+	psem(1 << semout);
+	cur = 0;
+	/* Until the file is done and both halves played, or 3 s without a request. */
+	while (left && now_ms() - last < 3000) {
+		uint16_t s = rd(SEM);
+
+		if (s & ~(1 << semin)) {
+			others |= s & ~(1 << semin);
+			wr(PCLEAR, s & ~(1 << semin));
+		}
+		if (!(s & (1 << semin))) {
+			delay_us(100);
+			continue;
+		}
+		wr(PCLEAR, 1 << semin);
+		last = now_ms();
+		if (!play_fill(base + cur * half / 2, f, half))
+			left--;
+		psem(1 << semout);
+		cur ^= 1;
+		fills++;
+	}
+	printf("play: %u halves of %u bytes in %ld ms (%ld bytes/s), %s, other bits %04x\n",
+	       fills, half, now_ms() - start, fills * half * 1000L / (now_ms() - start + 1),
+	       left ? "stalled (3 s without a request)" : "file done", others);
+	fclose(f);
+	wr(PMASK, 0xffff);
+	return 0;
+}
+
 static int restore(volatile uint16_t *sh, const char *path, unsigned int off, unsigned int len)
 {
 	size_t words, i;
@@ -480,7 +541,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: dsptool regs | rep | boot CODE DATA SHARED_PHYS | "
 			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
 			"       tone SHARED AREA HALF SEMIN SEMOUT MS [STEP [PMASK]] | load FILE PHYS |\n"
-			"       modules SHARED ADDR1 ADDR2 | restore SHARED FILE OFF LEN\n");
+			"       modules SHARED ADDR1 ADDR2 | restore SHARED FILE OFF LEN |\n"
+			"       play SHARED AREA HALF SEMIN SEMOUT FILE\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -514,6 +576,9 @@ int main(int argc, char **argv)
 		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]),
 		     argc > 8 ? atoi(argv[8]) : 1, argc > 9 ? strtoul(argv[9], NULL, 0) : 0xffff);
+	} else if (!strcmp(argv[1], "play") && argc == 8) {
+		return play(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
+			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7]);
 	} else if (!strcmp(argv[1], "restore") && argc == 6) {
 		return restore(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3],
 			       strtoul(argv[4], NULL, 0), strtoul(argv[5], NULL, 0));
