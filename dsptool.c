@@ -25,12 +25,13 @@
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
  *                                      half whenever the DSP raises SEMIN, then set SEMOUT;
  *                                      STEP n = n kHz (default 1), PMASK default 0xffff
- *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE [MS]
+ *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE [MS [FIRST]]
  *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
  *                                      decoder) through area AREA like tone, until its end
  *                                      or MS milliseconds (default 20000); prints the
  *                                      requests per second. FILE "-" = stdin (e.g.
- *                                      mpg123 -s -r 44100 --stereo x.mp3 | dsptool play ...)
+ *                                      mpg123 -s -r 44100 --stereo x.mp3 | dsptool play ...);
+ *                                      FIRST = half refilled on the first request (0)
  *   dsptool save SHARED FILE           write the shared buffer (0x6000 bytes) to FILE
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
@@ -477,7 +478,7 @@ static int play_fill(volatile uint16_t *half, FILE *f, unsigned int bytes)
 }
 
 static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
-		const char *path, int ms)
+		const char *path, int ms, int first)
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
 	FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin;
@@ -494,7 +495,7 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 	play_fill(base, f, half);
 	play_fill(base + half / 2, f, half);
 	psem(1 << semout);
-	cur = 0;
+	cur = first & 1;
 	/* Until the file is done and both halves played, or 3 s without a request. */
 	while (left && now_ms() - last < 3000 && now_ms() - start < ms) {
 		uint16_t s = rd(SEM);
@@ -612,7 +613,7 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "play") && argc >= 8) {
 		return play(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7],
-			    argc > 8 ? atoi(argv[8]) : 20000);
+			    argc > 8 ? atoi(argv[8]) : 20000, argc > 9 ? atoi(argv[9]) : 0);
 	} else if (!strcmp(argv[1], "save") && argc == 4) {
 		return save(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3]);
 	} else if (!strcmp(argv[1], "restore") && argc == 6) {
