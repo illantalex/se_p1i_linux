@@ -418,6 +418,7 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
 	unsigned int frames = half / 4, i, cur = 0, phase = 0, fills = 0;
+	uint16_t others = 0;
 	long end = now_ms() + ms;
 	static const int16_t sine[48] = {
 		0, 1305, 2588, 3827, 5000, 6088, 7071, 7934, 8660, 9239, 9659, 9914,
@@ -434,6 +435,11 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 	while (now_ms() < end) {
 		uint16_t s = rd(SEM);
 
+		/* Other bits are acknowledged too, so they cannot hold the DSP up. */
+		if (s & ~(1 << semin)) {
+			others |= s & ~(1 << semin);
+			wr(PCLEAR, s & ~(1 << semin));
+		}
 		if (!(s & (1 << semin))) {
 			delay_us(100);
 			continue;
@@ -446,7 +452,8 @@ static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, 
 		fills++;
 	}
 	printf("tone: %u half buffers filled in %d ms (expected about %u at 48 kHz), PSEM %04x "
-	       "SEM %04x\n", fills, ms, ms * 48 / frames, rd(PSEM), rd(SEM));
+	       "SEM %04x, other bits acknowledged %04x\n", fills, ms, ms * 48 / frames, rd(PSEM),
+	       rd(SEM), others);
 	wr(PMASK, 0xffff);
 }
 
