@@ -49,6 +49,13 @@ fi
 cmp -s /bin/busybox /newroot/usr/local/bin/busybox || cp /bin/busybox /newroot/usr/local/bin/
 [ -d /lib/firmware ] && mkdir -p /newroot/lib/firmware && cp -a /lib/firmware/. /newroot/lib/firmware/
 
+# Random seed: the ARM926 has no cycle counter for the kernel's jitter entropy, so the pool
+# only counted as initialised after ~90 s of interrupts, and sshd's getrandom() held up the
+# boot (and the gettys behind it). seedrng credits the seed saved on the card at the last
+# boot and stores a fresh one; the very first boot still waits.
+mkdir -p /newroot/var/lib/seedrng
+seedrng -d /newroot/var/lib/seedrng
+
 # USB network to the PC: address, route, DNS, clock (see /etc/p1i-usbnet.sh).
 /etc/p1i-usbnet.sh /newroot
 
