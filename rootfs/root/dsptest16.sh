@@ -2,15 +2,9 @@
 # DSP audio experiment 16: like experiment 15, but only the ARM-written parameter blocks
 # (0x800-0xBFF) are restored from Symbian's snapshot. 0x400-0x7FF stays zero: it holds the
 # DSP's own stream state (0x440: 0001 .. 0007 and counters moving during playback), which a
-# freshly booted DSP should not find. (Experiment 15 notes follow.)
-#
-# with message 46 (area 0 PCM stream) last: the DSP then ticks semaphore 14 at 200 Hz (and 1
-# once) -- dspcontrolldd's notification semaphores (it binds 0, 1 and 14; each completes a
-# user request) -- but never raises area 0's PCM semaphore 2, which Symbian has pending
-# during playback. The dump gives the messages, not their order. Here 46 comes before the
-# state-like messages (3 = 2, 60, 14 x2): A = after 70, B = right after the FEV,
-# C = as before plus a second 3 (2) after 46. The tone waits for bit 2, other bits are
-# acknowledged. Headphones on.
+# freshly booted DSP should not find. Variants as in experiment 15: message 46 (area 0 PCM
+# stream) A = after the parameter messages, B = right after the FEV, C = last plus a second
+# 3 (2). The tone waits for area 0's semaphore 2; other bits are acknowledged. Headphones on.
 cd "$(dirname "$0")"
 T=./dsptool
 F=/lib/firmware/p1i-dsp
