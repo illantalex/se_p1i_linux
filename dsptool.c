@@ -17,6 +17,9 @@
  *                                      as in suzifev.h) at shared+0x810; "swap" stores
  *                                      each pair high halfword first
  *   dsptool sem MS                     watch the DSP->ARM semaphores (SEM) for MS ms
+ *   dsptool fill SHARED AREA BYTES STEP write a sine into BYTES of shared area AREA, no
+ *                                      handshake: STEP 0 = silence, 1 = 1 kHz at 48 kHz,
+ *                                      2 = 2 kHz, ... (16-bit, same value in both channels)
  *   dsptool tone SHARED AREA HALF SEMIN SEMOUT MS
  *                                      play a 1 kHz tone through shared area AREA (ping-pong,
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
@@ -343,6 +346,21 @@ static int fev(volatile uint16_t *sh, uint16_t *h, int swap)
 	return msg(6, 0, 6, 0x810);
 }
 
+static const int16_t sine48[48] = {
+	0, 1305, 2588, 3827, 5000, 6088, 7071, 7934, 8660, 9239, 9659, 9914,
+	10000, 9914, 9659, 9239, 8660, 7934, 7071, 6088, 5000, 3827, 2588, 1305,
+	0, -1305, -2588, -3827, -5000, -6088, -7071, -7934, -8660, -9239, -9659, -9914,
+	-10000, -9914, -9659, -9239, -8660, -7934, -7071, -6088, -5000, -3827, -2588, -1305 };
+
+static void fill(volatile uint16_t *sh, int area, unsigned int bytes, unsigned int step)
+{
+	volatile uint16_t *base = sh + area_off[area] / 2;
+	unsigned int i, phase = 0;
+
+	for (i = 0; i < bytes / 4; i++, phase = (phase + step) % 48)
+		base[2 * i] = base[2 * i + 1] = step ? sine48[phase] : 0;
+}
+
 static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
 		 int ms)
 {
@@ -413,6 +431,9 @@ int main(int argc, char **argv)
 			   argc > 9 && !strcmp(argv[9], "swap")) ? 1 : 0;
 	} else if (!strcmp(argv[1], "sem") && argc == 3) {
 		sem_watch(atoi(argv[2]));
+	} else if (!strcmp(argv[1], "fill") && argc == 6) {
+		fill(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
+		     strtoul(argv[4], NULL, 0), atoi(argv[5]));
 	} else if (!strcmp(argv[1], "tone") && argc == 8) {
 		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]));
