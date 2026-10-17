@@ -29,7 +29,8 @@
  *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
  *                                      decoder) through area AREA like tone, until its end
  *                                      or MS milliseconds (default 20000); prints the
- *                                      requests per second
+ *                                      requests per second. FILE "-" = stdin (e.g.
+ *                                      mpg123 -s -r 44100 --stereo x.mp3 | dsptool play ...)
  *   dsptool save SHARED FILE           write the shared buffer (0x6000 bytes) to FILE
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
@@ -479,7 +480,7 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 		const char *path, int ms)
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
-	FILE *f = fopen(path, "rb");
+	FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin;
 	unsigned int cur, fills = 0, left = 2;
 	uint16_t others = 0;
 	long start = now_ms(), last = start, sec = start;
@@ -523,7 +524,8 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 		fills++;
 	}
 	printf("play: %u halves of %u bytes in %ld ms (%ld bytes/s), %s, other bits %04x\n",
-	       fills, half, now_ms() - start, fills * half * 1000L / (now_ms() - start + 1),
+	       fills, half, now_ms() - start,
+	       (long)((long long)fills * half * 1000 / (now_ms() - start + 1)),
 	       !left ? "file done" : now_ms() - start >= ms ? "time up" :
 	       "stalled (3 s without a request)", others);
 	fclose(f);
