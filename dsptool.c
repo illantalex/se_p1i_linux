@@ -28,6 +28,7 @@
  *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE
  *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
  *                                      decoder) through area AREA like tone, until its end
+ *   dsptool save SHARED FILE           write the shared buffer (0x6000 bytes) to FILE
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
  *   dsptool load FILE PHYS             copy FILE to physical address PHYS (SDRAM reserved
@@ -518,6 +519,24 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 	return 0;
 }
 
+static int save(volatile uint16_t *sh, const char *path)
+{
+	uint16_t buf[SHARED_SIZE / 2];
+	FILE *f = fopen(path, "wb");
+	size_t i;
+
+	if (!f) {
+		perror(path);
+		return 1;
+	}
+	for (i = 0; i < SHARED_SIZE / 2; i++)
+		buf[i] = sh[i];
+	fwrite(buf, 2, SHARED_SIZE / 2, f);
+	fclose(f);
+	printf("shared buffer saved to %s\n", path);
+	return 0;
+}
+
 static int restore(volatile uint16_t *sh, const char *path, unsigned int off, unsigned int len)
 {
 	size_t words, i;
@@ -542,7 +561,7 @@ int main(int argc, char **argv)
 			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
 			"       tone SHARED AREA HALF SEMIN SEMOUT MS [STEP [PMASK]] | load FILE PHYS |\n"
 			"       modules SHARED ADDR1 ADDR2 | restore SHARED FILE OFF LEN |\n"
-			"       play SHARED AREA HALF SEMIN SEMOUT FILE\n");
+			"       play SHARED AREA HALF SEMIN SEMOUT FILE | save SHARED FILE\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -579,6 +598,8 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "play") && argc == 8) {
 		return play(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7]);
+	} else if (!strcmp(argv[1], "save") && argc == 4) {
+		return save(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3]);
 	} else if (!strcmp(argv[1], "restore") && argc == 6) {
 		return restore(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3],
 			       strtoul(argv[4], NULL, 0), strtoul(argv[5], NULL, 0));
