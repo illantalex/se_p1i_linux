@@ -13,6 +13,18 @@
  *                                      it and send message 11 (shared buffer address)
  *   dsptool msg TYPE P0 P1 [SUB]       send a message, wait for and print the reply
  *   dsptool rep                        print pending replies (REP0-2), if any
+ *   dsptool fev SHARED H0 .. H5 [swap] message 6 with a Function Enable Vector (6 halfwords
+ *                                      as in suzifev.h) at shared+0x810; "swap" stores
+ *                                      each pair high halfword first
+ *   dsptool sem MS                     watch the DSP->ARM semaphores (SEM) for MS ms
+ *   dsptool tone SHARED AREA HALF SEMIN SEMOUT MS
+ *                                      play a 1 kHz tone through shared area AREA (ping-pong,
+ *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
+ *                                      half whenever the DSP raises SEMIN, then set SEMOUT
+ *
+ * Shared buffer layout (dspextension.dll): parameter areas at +0x000/0x400/0x440/0x4C0/
+ * 0x500/0x800, PCM areas 0-7 at +0x1000/0x1E00/0x2600/0x0000/0x2E00/0x3C40/0x4440/0x4C40;
+ * semaphore bits per area ARM->DSP 2,3,4,0,6,7,8,9 and DSP->ARM 2,3,4,0,6,7,8,13.
  */
 
 #include <fcntl.h>
@@ -47,6 +59,11 @@
 #define PSTS_WR_BUSY	(1 << 1)
 #define PSTS_REP0	(1 << 10)
 #define PSTS_CMD0	(1 << 13)
+
+#define PCLEAR	0x18
+
+static const uint32_t area_off[8] = { 0x1000, 0x1E00, 0x2600, 0x0000, 0x2E00, 0x3C40, 0x4440,
+				      0x4C40 };
 
 #define DSPCLKCTRL	0x64
 
@@ -259,13 +276,117 @@ static void boot(const char *code_path, const char *data_path, uint32_t shared, 
 	msg(11, 0, shared >> 16, shared & 0xFFFF);
 }
 
+static volatile uint16_t *map_shared(int fd, uint32_t shared)
+{
+	void *p = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
+
+	if (p == MAP_FAILED) {
+		perror("mmap shared");
+		exit(1);
+	}
+	return p;
+}
+
+/* dspextension #12: set ARM->DSP semaphore bits, with the DSP clock request held (bit 9). */
+static void psem(uint16_t bits)
+{
+	uint32_t clk = clk_rd();
+
+	clk_wr(clk | 0x200);
+	(void)clk_rd();
+	(void)clk_rd();
+	(void)clk_rd();
+	wr(PSEM, rd(PSEM) | bits);
+	clk_wr(clk);
+}
+
+static long now_ms(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static void sem_watch(int ms)
+{
+	long end = now_ms() + ms;
+	uint16_t seen = 0, last = 0xffff;
+	unsigned int n = 0;
+
+	wr(PMASK, 0xffff);	/* no interrupts: polled */
+	while (now_ms() < end) {
+		uint16_t s = rd(SEM);
+
+		if (s != last)
+			printf("%6ld ms: SEM %04x PSTS %04x\n", ms - (end - now_ms()), s, rd(PSTS));
+		last = s;
+		if (s) {
+			seen |= s;
+			n++;
+			wr(PCLEAR, s);
+		}
+		delay_us(200);
+	}
+	printf("bits seen: %04x (%u acks)\n", seen, n);
+}
+
+/* Message 6: the Function Enable Vector, 6 halfwords at shared+0x810. */
+static int fev(volatile uint16_t *sh, uint16_t *h, int swap)
+{
+	int i;
+
+	for (i = 0; i < 6; i += 2) {
+		sh[0x810 / 2 + i] = swap ? h[i + 1] : h[i];
+		sh[0x810 / 2 + i + 1] = swap ? h[i] : h[i + 1];
+	}
+	return msg(6, 0, 6, 0x810);
+}
+
+static void tone(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
+		 int ms)
+{
+	volatile uint16_t *base = sh + area_off[area] / 2;
+	unsigned int frames = half / 4, i, cur = 0, phase = 0, fills = 0;
+	long end = now_ms() + ms;
+	static const int16_t sine[48] = {
+		0, 1305, 2588, 3827, 5000, 6088, 7071, 7934, 8660, 9239, 9659, 9914,
+		10000, 9914, 9659, 9239, 8660, 7934, 7071, 6088, 5000, 3827, 2588, 1305,
+		0, -1305, -2588, -3827, -5000, -6088, -7071, -7934, -8660, -9239, -9659, -9914,
+		-10000, -9914, -9659, -9239, -8660, -7934, -7071, -6088, -5000, -3827, -2588, -1305 };
+
+	wr(PMASK, 0xffff);
+	for (cur = 0; cur < 2; cur++)
+		for (i = 0; i < frames; i++, phase = (phase + 1) % 48)
+			base[cur * half / 2 + 2 * i] = base[cur * half / 2 + 2 * i + 1] = sine[phase];
+	psem(1 << semout);
+	cur = 0;
+	while (now_ms() < end) {
+		uint16_t s = rd(SEM);
+
+		if (!(s & (1 << semin))) {
+			delay_us(100);
+			continue;
+		}
+		wr(PCLEAR, 1 << semin);
+		for (i = 0; i < frames; i++, phase = (phase + 1) % 48)
+			base[cur * half / 2 + 2 * i] = base[cur * half / 2 + 2 * i + 1] = sine[phase];
+		psem(1 << semout);
+		cur ^= 1;
+		fills++;
+	}
+	printf("tone: %u half buffers filled in %d ms (expected about %u at 48 kHz)\n", fills,
+	       ms, ms * 48 / frames);
+}
+
 int main(int argc, char **argv)
 {
 	int fd;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: dsptool regs | rep | boot CODE DATA SHARED_PHYS | "
-			"msg TYPE P0 P1 [SUB]\n");
+			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
+			"       tone SHARED AREA HALF SEMIN SEMOUT MS\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -282,6 +403,19 @@ int main(int argc, char **argv)
 		rep("pending");
 	} else if (!strcmp(argv[1], "boot") && argc == 5) {
 		boot(argv[2], argv[3], strtoul(argv[4], NULL, 0), fd);
+	} else if (!strcmp(argv[1], "fev") && argc >= 9) {
+		uint16_t h[6];
+		int i;
+
+		for (i = 0; i < 6; i++)
+			h[i] = strtoul(argv[3 + i], NULL, 0);
+		return fev(map_shared(fd, strtoul(argv[2], NULL, 0)), h,
+			   argc > 9 && !strcmp(argv[9], "swap")) ? 1 : 0;
+	} else if (!strcmp(argv[1], "sem") && argc == 3) {
+		sem_watch(atoi(argv[2]));
+	} else if (!strcmp(argv[1], "tone") && argc == 8) {
+		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
+		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]));
 	} else if (!strcmp(argv[1], "msg") && argc >= 5) {
 		return msg(strtoul(argv[2], NULL, 0), argc > 5 ? strtoul(argv[5], NULL, 0) : 0,
 			   strtoul(argv[3], NULL, 0), strtoul(argv[4], NULL, 0)) ? 1 : 0;

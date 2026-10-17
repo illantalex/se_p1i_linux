@@ -22,14 +22,24 @@ if [ "$2" = stop ]; then
 	iptables -D FORWARD -i "$IF" -o "$OUT" -j ACCEPT 2>/dev/null || true
 	iptables -D FORWARD -i "$OUT" -o "$IF" -m state --state RELATED,ESTABLISHED -j ACCEPT \
 		2>/dev/null || true
+	command -v nmcli >/dev/null && nmcli connection delete p1i-usb >/dev/null 2>&1
 	ip addr flush dev "$IF"
 	exit 0
 fi
 
-# Keep NetworkManager from running DHCP on it and flushing the address.
-command -v nmcli >/dev/null && nmcli device set "$IF" managed no 2>/dev/null || true
-ip addr replace 192.168.7.1/24 dev "$IF"
-ip link set "$IF" up
+# With NetworkManager, give the phone its own profile (bound to the interface name, higher
+# priority than catch-all wired profiles), so it gets 192.168.7.1 again by itself after every
+# reconnect. The NAT rules below last until the PC reboots.
+if command -v nmcli >/dev/null && nmcli -t general status >/dev/null 2>&1; then
+	nmcli -t -f NAME connection show | grep -qx p1i-usb ||
+		nmcli connection add type ethernet con-name p1i-usb ifname "$IF" \
+			ipv4.method manual ipv4.addresses 192.168.7.1/24 ipv6.method disabled \
+			connection.autoconnect-priority 50 >/dev/null
+	nmcli connection up p1i-usb >/dev/null
+else
+	ip addr replace 192.168.7.1/24 dev "$IF"
+	ip link set "$IF" up
+fi
 
 sysctl -q -w net.ipv4.ip_forward=1
 # Idempotent: -C checks for the rule first. FORWARD rules are needed where Docker set the
