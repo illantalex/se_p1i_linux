@@ -76,9 +76,13 @@
 			no-map;
 		};
 
-		/* Audio DSP shared buffer (dsptool experiments; the DSP reads it by physical address). */
-		dsp_shared: dsp-shared@81100000 {
-			reg = <0x81100000 0x10000>;
+		/*
+		 * Audio DSP modules (DspCodecModule.bin at +0, DspSrcFilterCoefs.bin at +0x4E000 as
+		 * in Symbian's layout), announced to the DSP with message 12; it reads them by
+		 * physical address. The shared buffer itself is in the internal SRAM (0x08000000).
+		 */
+		dsp_modules: dsp-modules@81100000 {
+			reg = <0x81100000 0x60000>;
 			no-map;
 		};
 	};

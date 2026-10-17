@@ -24,6 +24,11 @@
  *                                      play a 1 kHz tone through shared area AREA (ping-pong,
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
  *                                      half whenever the DSP raises SEMIN, then set SEMOUT
+ *   dsptool load FILE PHYS             copy FILE to physical address PHYS (SDRAM reserved
+ *                                      for the DSP) and verify it
+ *   dsptool modules SHARED ADDR1 ADDR2 message 12: tell the DSP where the codec module and
+ *                                      the SRC filter coefficients are (block at shared+0x800:
+ *                                      1, 1, ADDR1 hi, lo, ADDR2 hi, lo, as on Symbian)
  *
  * Shared buffer layout (dspextension.dll): parameter areas at +0x000/0x400/0x440/0x4C0/
  * 0x500/0x800, PCM areas 0-7 at +0x1000/0x1E00/0x2600/0x0000/0x2E00/0x3C40/0x4440/0x4C40;
@@ -352,6 +357,44 @@ static int fev(volatile uint16_t *sh, uint16_t *h, int swap)
 	return msg(6, 0, 6, 0x810);
 }
 
+/* Message 12: the DSP's module buffers in SDRAM, 6 halfwords at shared+0x800. */
+static int modules(volatile uint16_t *sh, uint32_t a1, uint32_t a2)
+{
+	sh[0x800 / 2 + 0] = 1;
+	sh[0x800 / 2 + 1] = 1;
+	sh[0x800 / 2 + 2] = a1 >> 16;
+	sh[0x800 / 2 + 3] = a1 & 0xFFFF;
+	sh[0x800 / 2 + 4] = a2 >> 16;
+	sh[0x800 / 2 + 5] = a2 & 0xFFFF;
+	return msg(12, 0, 6, 0x800);
+}
+
+/* Copy a file to physical memory (not mapped by the kernel: a no-map reservation). */
+static int load_phys(int fd, const char *path, uint32_t phys)
+{
+	size_t words, len, maplen, i, bad = 0;
+	uint32_t base = phys & ~0xFFFu;
+	const uint8_t *src = (const uint8_t *)load_file(path, &words);
+	volatile uint8_t *map_p, *p;
+
+	len = words * 2;	/* both module files have an even size */
+	maplen = (phys - base + len + 0xFFF) & ~0xFFFu;
+	map_p = mmap(NULL, maplen, PROT_READ | PROT_WRITE, MAP_SHARED, fd, base);
+	if (map_p == MAP_FAILED) {
+		perror("mmap");
+		return 1;
+	}
+	p = map_p + (phys - base);
+	for (i = 0; i < len; i++)
+		p[i] = src[i];
+	for (i = 0; i < len; i++)
+		bad += p[i] != src[i];
+	printf("%s: %zu bytes at 0x%08x-0x%08zx, %zu differ on read-back\n", path, len, phys,
+	       phys + len - 1, bad);
+	munmap((void *)map_p, maplen);
+	return bad ? 1 : 0;
+}
+
 static const int16_t sine48[48] = {
 	0, 1305, 2588, 3827, 5000, 6088, 7071, 7934, 8660, 9239, 9659, 9914,
 	10000, 9914, 9659, 9239, 8660, 7934, 7071, 6088, 5000, 3827, 2588, 1305,
@@ -410,7 +453,8 @@ int main(int argc, char **argv)
 	if (argc < 2) {
 		fprintf(stderr, "usage: dsptool regs | rep | boot CODE DATA SHARED_PHYS | "
 			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
-			"       tone SHARED AREA HALF SEMIN SEMOUT MS\n");
+			"       tone SHARED AREA HALF SEMIN SEMOUT MS | load FILE PHYS |\n"
+			"       modules SHARED ADDR1 ADDR2\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -443,6 +487,11 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "tone") && argc == 8) {
 		tone(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 		     strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), atoi(argv[7]));
+	} else if (!strcmp(argv[1], "load") && argc == 4) {
+		return load_phys(fd, argv[2], strtoul(argv[3], NULL, 0));
+	} else if (!strcmp(argv[1], "modules") && argc == 5) {
+		return modules(map_shared(fd, strtoul(argv[2], NULL, 0)),
+			       strtoul(argv[3], NULL, 0), strtoul(argv[4], NULL, 0)) ? 1 : 0;
 	} else if (!strcmp(argv[1], "msg") && argc >= 5) {
 		return msg(strtoul(argv[2], NULL, 0), argc > 5 ? strtoul(argv[5], NULL, 0) : 0,
 			   strtoul(argv[3], NULL, 0), strtoul(argv[4], NULL, 0)) ? 1 : 0;
