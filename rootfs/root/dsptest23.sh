@@ -41,7 +41,7 @@ desc() { $T save $SH /tmp/s.bin >/dev/null; echo "  0x440: $(od -An -tx2 -j 0x44
 gpioset -z -c gpiochip6 14=1 15=1 16=1 2>/dev/null
 V=skip
 HALF=${1:-2016}
-shift
+[ $# -gt 0 ] && shift
 case "${1:-idle}" in
 boot)
 	$T load $F/DspCodecModule.bin 0x81100000 >/dev/null || exit 1
