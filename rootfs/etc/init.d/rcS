@@ -14,9 +14,9 @@ hostname p1i
 # Keypad to console with Symbian-style Shift/Alt and the symbols printed on the keys
 p1ikbd
 
-# Battery level from the modem (/run/p1i-battery), warnings, poweroff when empty
+# Battery level from the modem (/run/p1i-battery), warnings, poweroff when empty; radio off
 mkdir -p /run
-p1ibat
+p1ibat -r off
 
 echo
 echo "P1i: userspace up on $(uname -sr), $(cut -d' ' -f1 /proc/uptime)s after boot"
