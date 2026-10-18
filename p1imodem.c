@@ -20,9 +20,21 @@
  * word cleared, e.g. 0c 00 00 00 99 ... -> 0c 00 00 00 19 ...; probably the bridge bouncing
  * a message for an unknown address. Channel 22 (notifications) takes no input.
  *
+ * After "reset" (tried 2026-10-18; the phone keeps running: BB_RST# only resets the DB2001,
+ * not the AB2010 power chip) the modem stays silent: no boot output and no answer to AT on
+ * UART3 (with or without RTS = GPO_17 high), nothing on HS UART2 at 115200 or 928k (HS
+ * UART1 is in loopback). It keeps CTS low and put one break on HS UART2. It probably waits
+ * for a start-up handshake from the application side (bridgedrv.ldd); booting Symbian
+ * again restores the CAIF link.
+ *
  * Stop p1ibat first (killall p1ibat): only one reader of UART3 works at a time.
  *
  *   p1imodem listen SECONDS                print every frame received
+ *   p1imodem reset                         reset the modem (BB_RST# = GPO_07 low for
+ *                                          100 ms): it restarts in AT mode, not CAIF
+ *   p1imodem text "AT" [SECONDS]           plain text: send the line (+ CR) with the break
+ *                                          off, print what comes back (default 3 s); the
+ *                                          break stays off
  *   p1imodem raw HEX...                    send one frame with this payload (first byte =
  *                                          channel) and print the replies for 4 s
  *   p1imodem at "AT+CFUN?" [CHTYPE PRIO PHYID]
@@ -176,8 +188,8 @@ int main(int argc, char **argv)
 	uint32_t lcr;
 	int fd;
 
-	if (argc < 3) {
-		fprintf(stderr, "usage: %s listen SECONDS | raw HEX... | at COMMAND [CHTYPE PRIO PHYID]\n",
+	if (argc < 3 && !(argc == 2 && !strcmp(argv[1], "reset"))) {
+		fprintf(stderr, "usage: %s listen SECONDS | raw HEX... | reset | text LINE [SECONDS] | at COMMAND [CHTYPE PRIO PHYID]\n",
 			argv[0]);
 		return 1;
 	}
@@ -196,6 +208,48 @@ int main(int argc, char **argv)
 	t0 = 0;
 	t0 = now();
 
+	if (!strcmp(argv[1], "reset")) {
+		/* P3_OUTP_CLR / P3_OUTP_SET, bit 7 = GPO_07 = BB_RST# */
+		gpio[0x08 / 4] = 1 << 7;
+		usleep(100000);
+		gpio[0x04 / 4] = 1 << 7;
+		printf("modem reset\n");
+		return 0;
+	}
+	if (!strcmp(argv[1], "text")) {
+		double end;
+		int i, col = 0;
+
+		u3[U16_LCR / 4] = u3[U16_LCR / 4] & ~U16_LCR_BREAK;
+		while (u3[U16_LSR / 4] & U16_LSR_DR)
+			(void)u3[U16_RBR / 4];
+		for (i = 0; argv[2][i] || i == (int)strlen(argv[2]); i++) {
+			while (!(u3[U16_LSR / 4] & U16_LSR_THRE))
+				;
+			u3[U16_THR / 4] = argv[2][i] ? argv[2][i] : '\r';
+			if (!argv[2][i])
+				break;
+		}
+		end = now() + (argc > 3 ? atof(argv[3]) : 3);
+		while (now() < end) {
+			while (u3[U16_LSR / 4] & U16_LSR_DR) {
+				uint8_t c = u3[U16_RBR / 4];
+
+				if (c == '\n' || col > 70) {
+					putchar('\n');
+					col = 0;
+				}
+				if (c >= 0x20 && c < 0x7f)
+					putchar(c);
+				else if (c != '\n')
+					printf("<%02x>", c);
+				col++;
+			}
+			usleep(500);
+		}
+		putchar('\n');
+		return 0;
+	}
 	if (!strcmp(argv[1], "listen")) {
 		receive(atof(argv[2]), 0);
 		return 0;
