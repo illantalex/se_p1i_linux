@@ -55,6 +55,15 @@ cmp -s /bin/busybox /newroot/usr/local/bin/busybox || cp /bin/busybox /newroot/u
 # boot and stores a fresh one; the very first boot still waits.
 mkdir -p /newroot/var/lib/seedrng
 seedrng -d /newroot/var/lib/seedrng
+# A seed saved before the pool is initialised is "no-credit" and is not credited at the
+# next boot either, so it never gets out of that: once the pool is ready (reading
+# /dev/random blocks until then), save a creditable seed for the next boot. Runs inside the
+# new root, so it survives switch_root.
+# (/dev is moved into the new root only below: wait for it first.)
+chroot /newroot /usr/local/bin/busybox sh -c "B=/usr/local/bin/busybox
+	while [ ! -c /dev/random ]; do \$B sleep 1; done
+	\$B head -c 1 /dev/random >/dev/null && \$B seedrng -d /var/lib/seedrng" \
+	</dev/null >/dev/null 2>&1 &
 
 # USB network to the PC: address, route, DNS, clock (see /etc/p1i-usbnet.sh).
 /etc/p1i-usbnet.sh /newroot
