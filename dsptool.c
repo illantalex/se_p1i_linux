@@ -25,13 +25,16 @@
  *                                      HALF bytes per half, 16-bit stereo at 48 kHz): fill a
  *                                      half whenever the DSP raises SEMIN, then set SEMOUT;
  *                                      STEP n = n kHz (default 1), PMASK default 0xffff
- *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE [MS [FIRST]]
+ *   dsptool play SHARED AREA HALF SEMIN SEMOUT FILE [MS [FIRST [SLOTS]]]
  *                                      stream FILE (raw bytes: PCM, or MP3 for the DSP's
  *                                      decoder) through area AREA like tone, until its end
  *                                      or MS milliseconds (default 20000); prints the
  *                                      requests per second. FILE "-" = stdin (e.g.
  *                                      mpg123 -s -r 44100 --stereo x.mp3 | dsptool play ...);
- *                                      FIRST = half refilled on the first request (0)
+ *                                      FIRST = slot refilled on the first request (0);
+ *                                      SLOTS = HALF-sized slots the area is cycled through
+ *                                      (2; 4 = Symbian's two 2016-byte halves taken by the
+ *                                      DSP in 1008-byte steps)
  *   dsptool save SHARED FILE           write the shared buffer (0x6000 bytes) to FILE
  *   dsptool restore SHARED FILE OFF LEN copy bytes OFF..OFF+LEN-1 of FILE (a shared buffer
  *                                      snapshot from Symbian) to the same offsets
@@ -478,7 +481,7 @@ static int play_fill(volatile uint16_t *half, FILE *f, unsigned int bytes)
 }
 
 static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, int semout,
-		const char *path, int ms, int first)
+		const char *path, int ms, int first, int slots)
 {
 	volatile uint16_t *base = sh + area_off[area] / 2;
 	FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin;
@@ -487,15 +490,18 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 	long start = now_ms(), last = start, sec = start;
 	unsigned int sec_fills = 0;
 
+	if (slots < 2 || slots > 8 || half * slots > 0x1000)
+		slots = 2;
 	if (!f || half > 4096 || half & 1) {
 		fprintf(stderr, "play: cannot open %s or bad half size\n", path);
 		return 1;
 	}
 	wr(PMASK, 0xbff8);
-	play_fill(base, f, half);
-	play_fill(base + half / 2, f, half);
+	left = slots;	/* slots still to play after the end of the file */
+	for (cur = 0; cur < (unsigned int)slots; cur++)
+		play_fill(base + cur * half / 2, f, half);
 	psem(1 << semout);
-	cur = first & 1;
+	cur = first % slots;
 	/* Until the file is done and both halves played, or 3 s without a request. */
 	while (left && now_ms() - last < 3000 && now_ms() - start < ms) {
 		uint16_t s = rd(SEM);
@@ -521,7 +527,7 @@ static int play(volatile uint16_t *sh, int area, unsigned int half, int semin, i
 		if (!play_fill(base + cur * half / 2, f, half))
 			left--;
 		psem(1 << semout);
-		cur ^= 1;
+		cur = (cur + 1) % slots;
 		fills++;
 	}
 	printf("play: %u halves of %u bytes in %ld ms (%ld bytes/s), %s, other bits %04x\n",
@@ -613,7 +619,8 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "play") && argc >= 8) {
 		return play(map_shared(fd, strtoul(argv[2], NULL, 0)), atoi(argv[3]),
 			    strtoul(argv[4], NULL, 0), atoi(argv[5]), atoi(argv[6]), argv[7],
-			    argc > 8 ? atoi(argv[8]) : 20000, argc > 9 ? atoi(argv[9]) : 0);
+			    argc > 8 ? atoi(argv[8]) : 20000, argc > 9 ? atoi(argv[9]) : 0,
+			    argc > 10 ? atoi(argv[10]) : 2);
 	} else if (!strcmp(argv[1], "save") && argc == 4) {
 		return save(map_shared(fd, strtoul(argv[2], NULL, 0)), argv[3]);
 	} else if (!strcmp(argv[1], "restore") && argc == 6) {
