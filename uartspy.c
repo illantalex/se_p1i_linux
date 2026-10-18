@@ -2,7 +2,8 @@
  * uartspy.c -- watch the modem link UARTs without configuring them: poll the receive FIFOs
  * of HS UART1/2/7 (0x40014000/18000/1C000) and UART3 (0x40080000, 16550) through /dev/mem
  * and print every byte received, with a timestamp. Nothing is written to any UART register;
- * reading the FIFOs takes the bytes out (Symbian is gone, nobody else reads them).
+ * reading the FIFOs takes the bytes out, so stop p1ibat (which reads UART3) first:
+ * killall p1ibat.
  *
  *   uartspy [SECONDS]     (default 60)
  */

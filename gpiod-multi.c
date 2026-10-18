@@ -4,7 +4,7 @@
  * (one copy of glibc) instead of five ~660 KB ones, which would not fit the 4 MB payload.
  * build.sh renames each tool's main() to <tool>_main with objcopy and links them with
  * this; /usr/bin/gpioset etc. are symlinks to it. memdump.c, evdump.c, p1ikbd.c,
- * dsptool.c and uartspy.c ride along the same way.
+ * dsptool.c, uartspy.c and p1ibat.c ride along the same way.
  */
 
 #include <stdio.h>
@@ -20,6 +20,7 @@ int evdump_main(int argc, char **argv);
 int p1ikbd_main(int argc, char **argv);
 int dsptool_main(int argc, char **argv);
 int uartspy_main(int argc, char **argv);
+int p1ibat_main(int argc, char **argv);
 
 static const struct {
 	const char *name;
@@ -35,6 +36,7 @@ static const struct {
 	{ "p1ikbd", p1ikbd_main },
 	{ "dsptool", dsptool_main },
 	{ "uartspy", uartspy_main },
+	{ "p1ibat", p1ibat_main },
 };
 
 int main(int argc, char **argv)

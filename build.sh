@@ -61,9 +61,9 @@ for t in $GPIOD_TOOLS; do
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"
 done
 # Own small tools (memdump.c: /dev/mem dumper, evdump.c: input event viewer, p1ikbd.c:
-# keypad-to-console daemon, dsptool.c: audio DSP experiments, uartspy.c: modem link sniffer)
-# share the binary the same way.
-OWN_TOOLS="memdump evdump p1ikbd dsptool uartspy"
+# keypad-to-console daemon, dsptool.c: audio DSP experiments, uartspy.c: modem link sniffer,
+# p1ibat.c: battery level daemon) share the binary the same way.
+OWN_TOOLS="memdump evdump p1ikbd dsptool uartspy p1ibat"
 for t in $OWN_TOOLS; do
 	arm-linux-gnueabi-gcc -O2 -Wall -c -Dmain=${t}_main -o "$GPIOD/tools/$t-multi.o" $t.c
 	OBJS="$OBJS $GPIOD/tools/$t-multi.o"

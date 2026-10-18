@@ -36,8 +36,8 @@ fi
 mount -o rw,noatime $ROOT /newroot || fallback "cannot mount $ROOT"
 [ -e /newroot/sbin/init ] || fallback "no /sbin/init on $ROOT"
 
-# Keep the root's copy of our tools (memdump, evdump, p1ikbd, dsptool, uartspy, gpio*) and the
-# firmware from this payload current.
+# Keep the root's copy of our tools (memdump, evdump, p1ikbd, dsptool, uartspy, p1ibat,
+# gpio*) and the firmware from this payload current.
 if ! cmp -s /usr/bin/gpiod-multi /newroot/usr/local/bin/gpiod-multi; then
 	mkdir -p /newroot/usr/local/bin
 	cp /usr/bin/gpiod-multi /newroot/usr/local/bin/
@@ -64,6 +64,12 @@ chroot /newroot /usr/local/bin/busybox sh -c "B=/usr/local/bin/busybox
 	while [ ! -c /dev/random ]; do \$B sleep 1; done
 	\$B head -c 1 /dev/random >/dev/null && \$B seedrng -d /var/lib/seedrng" \
 	</dev/null >/dev/null 2>&1 &
+
+# Battery level from the modem, low battery warnings, poweroff when empty. It runs inside
+# the new root (its poweroff and /run), so it waits there for /dev, which is moved in below.
+chroot /newroot /usr/local/bin/busybox sh -c "B=/usr/local/bin/busybox
+	while [ ! -c /dev/mem ]; do \$B sleep 1; done
+	exec /usr/local/bin/p1ibat" </dev/null >/dev/null 2>&1 &
 
 # USB network to the PC: address, route, DNS, clock (see /etc/p1i-usbnet.sh).
 /etc/p1i-usbnet.sh /newroot
