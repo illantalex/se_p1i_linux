@@ -36,7 +36,7 @@ fi
 mount -o rw,noatime $ROOT /newroot || fallback "cannot mount $ROOT"
 [ -e /newroot/sbin/init ] || fallback "no /sbin/init on $ROOT"
 
-# Keep the root's copy of our tools (memdump, evdump, p1ikbd, dsptool, gpio*) and the
+# Keep the root's copy of our tools (memdump, evdump, p1ikbd, dsptool, uartspy, gpio*) and the
 # firmware from this payload current.
 if ! cmp -s /usr/bin/gpiod-multi /newroot/usr/local/bin/gpiod-multi; then
 	mkdir -p /newroot/usr/local/bin
