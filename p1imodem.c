@@ -13,8 +13,12 @@
  * (00 03 01) is answered with 00 23 01, RADIO_SET (00 08 <0|1>) with 00 28 <0|1> and
  * switches the radio (flight mode; p1ibat does that). LINK_SETUP of an AT channel
  * (00 00 (chtype << 4) | 1, (priority << 3) | phyid, endpoint) was refused (00 30 ...) for
- * every channel type and endpoint tried; the reply to an accepted one would end with the
- * new channel number, and AT data on it is 0x00 + the command text.
+ * every channel type and endpoint tried, as was every other service (DECM, video, debug,
+ * datagram with connection ids 0-22, RFM, utility): the channels seem fixed by Symbian's
+ * AT*SECAIF setup. Of channels 1-31, only 1 and 2 (BServer's CAIFMUX::1 and ::2) answer
+ * data: they return the message (after the 0x00 service byte) with bit 7 of its second
+ * word cleared, e.g. 0c 00 00 00 99 ... -> 0c 00 00 00 19 ...; probably the bridge bouncing
+ * a message for an unknown address. Channel 22 (notifications) takes no input.
  *
  * Stop p1ibat first (killall p1ibat): only one reader of UART3 works at a time.
  *
@@ -45,7 +49,7 @@
 #define U16_LSR_DR	(1 << 0)
 #define U16_LSR_THRE	(1 << 5)
 
-static volatile uint32_t *u3;
+static volatile uint32_t *u3, *gpio;
 static double t0;
 static int setup_reply = -1;	/* channel from a LINK_SETUP reply, -2 = rejected */
 
@@ -115,14 +119,30 @@ static void handle_byte(uint8_t c)
 	}
 }
 
-/* Receive for SECONDS, or until a LINK_SETUP reply if stop_on_setup */
+/*
+ * Receive for SECONDS, or until a LINK_SETUP reply if stop_on_setup. The modem asks to send
+ * by pulling CTS (GPI_05) low while our break is on: answer with a short wake-up (break off
+ * for 20 ms), or its replies stay queued.
+ */
 static void receive(double seconds, int stop_on_setup)
 {
-	double end = now() + seconds;
+	double end = now() + seconds, woke = 0;
 
 	while (now() < end) {
 		while (u3[U16_LSR / 4] & U16_LSR_DR)
 			handle_byte(u3[U16_RBR / 4]);
+		if ((u3[U16_LCR / 4] & U16_LCR_BREAK) && !(gpio[0] & (1 << 5)) &&
+		    now() - woke > 0.5) {
+			uint32_t lcr = u3[U16_LCR / 4];
+			double t;
+
+			woke = now();
+			u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
+			for (t = now(); now() - t < 0.02; )
+				while (u3[U16_LSR / 4] & U16_LSR_DR)
+					handle_byte(u3[U16_RBR / 4]);
+			u3[U16_LCR / 4] = lcr;
+		}
 		if (stop_on_setup && setup_reply != -1)
 			return;
 		usleep(500);
@@ -167,7 +187,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	u3 = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x40080000);
-	if (u3 == MAP_FAILED) {
+	gpio = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x40028000);
+	if (u3 == MAP_FAILED || gpio == MAP_FAILED) {
 		perror("mmap");
 		return 1;
 	}

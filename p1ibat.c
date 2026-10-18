@@ -30,8 +30,10 @@
  * modem answers 00 28 <state>, or 00 38 <state> if it was in that state already), the
  * flight mode. Symbian keeps a break on UART3's TX line while it does not talk to the
  * modem; clearing it wakes the modem, which answers by pulling CTS (GPI_05, active low)
- * low. Control replies come once the break is back. RTS to the modem (GPO_17) is not
- * needed.
+ * low. The other way round, the modem pulls CTS low while the break is on when it has
+ * something to send, and waits for a short wake-up (break off for 20 ms): without one,
+ * control replies and some notifications stay queued in the modem. RTS to the modem
+ * (GPO_17) is not needed.
  *
  *   p1ibat [-f] [-r off|on]   the daemon. -f: stay in the foreground and print every
  *                             frame; -r: switch the radio off or on at start
@@ -317,6 +319,22 @@ static int radio_command(const char *arg)
 	return 0;
 }
 
+/* The modem asks to send (CTS low while our break is on): give it a short wake-up */
+static void answer_modem(void)
+{
+	static double woke;
+	uint32_t lcr = u3[U16_LCR / 4];
+	double t;
+
+	if (!(lcr & U16_LCR_BREAK) || gpio[P3_INP_STATE / 4] & GPI_05_CTS || now() - woke < 0.5)
+		return;
+	woke = now();
+	u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
+	for (t = now(); now() - t < 0.02; )
+		receive_pending();
+	u3[U16_LCR / 4] = lcr;
+}
+
 int main(int argc, char **argv)
 {
 	unsigned int warned = 0;
@@ -363,6 +381,7 @@ usage:
 
 	for (;;) {
 		receive_pending();
+		answer_modem();
 
 		if (radio_request >= 0) {
 			uint8_t cmd[] = { 0, CAIF_CMD_RADIO_SET, radio_request };
