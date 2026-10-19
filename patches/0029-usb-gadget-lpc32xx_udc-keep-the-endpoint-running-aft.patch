@@ -1,7 +1,7 @@
 From 82c50b76c1d6151f27fde634697811a8391894b7 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sat, 17 Oct 2026 20:33:54 +0200
-Subject: [PATCH 29/40] usb: gadget: lpc32xx_udc: keep the endpoint running
+Subject: [PATCH 29/43] usb: gadget: lpc32xx_udc: keep the endpoint running
  after a DMA error
 
 After a DMA error (or a descriptor reporting anything but normal completion

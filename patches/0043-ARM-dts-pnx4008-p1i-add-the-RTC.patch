@@ -1,0 +1,43 @@
+From dfd75ab0790d766a72c07c4989dfcf722f312cb8 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 19 Oct 2026 22:38:27 +0200
+Subject: [PATCH 43/43] ARM: dts: pnx4008-p1i: add the RTC
+
+The RTC Symbian keeps running, counting from 2000-01-01 (nxp,epoch-year).
+No interrupt yet: the LPC32xx RTC line (SIC1 20) reads active in the raw
+status and is left off until verified.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 5a70d0874..323352470 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -418,6 +418,21 @@ memstick@20080000 {
+ 			cd-gpios = <&gpio 4 0 GPIO_ACTIVE_LOW>;
+ 		};
+ 
++		/*
++		 * RTC, LPC32xx layout, kept running by Symbian (key register already holds the
++		 * driver's value, so it is not reset). Symbian counts seconds from 2000-01-01
++		 * (nxp,epoch-year): the counter read 2008-02-01 that way, the date Symbian gave
++		 * its files then. (start-year does not shift the epoch, it only marks values
++		 * below it as wrapped.)
++		 * No interrupt (alarm only): SIC1 20, the LPC32xx RTC line, reads active in
++		 * the raw status, so it is left off until verified.
++		 */
++		rtc@40024000 {
++			compatible = "nxp,lpc3220-rtc";
++			reg = <0x40024000 0x1000>;
++			nxp,epoch-year = <2000>;
++		};
++
+ 		gpio: gpio@40028000 {
+ 			compatible = "nxp,lpc3220-gpio";
+ 			reg = <0x40028000 0x1000>;
+-- 
+2.53.0
+

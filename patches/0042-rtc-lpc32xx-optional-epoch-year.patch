@@ -1,0 +1,96 @@
+From 4d0e0214261caf45c1c0091ebbd014357c2c2d00 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 19 Oct 2026 22:38:27 +0200
+Subject: [PATCH 42/43] rtc: lpc32xx: optional epoch year
+
+When the RTC is shared with another OS that counts seconds from a different
+epoch (Symbian on the Sony Ericsson P1i counts from 2000-01-01), the counter
+is not Unix time. "start-year" does not help: it only treats values below
+the start as wrapped. Add an optional "nxp,epoch-year" property: the time,
+alarm and supported range are shifted by the start of that year. Without
+the property nothing changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/rtc/rtc-lpc32xx.c | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/rtc/rtc-lpc32xx.c b/drivers/rtc/rtc-lpc32xx.c
+index 76ad7031a..ac94bb8ef 100644
+--- a/drivers/rtc/rtc-lpc32xx.c
++++ b/drivers/rtc/rtc-lpc32xx.c
+@@ -12,6 +12,7 @@
+ #include <linux/slab.h>
+ #include <linux/io.h>
+ #include <linux/of.h>
++#include <linux/property.h>
+ 
+ /*
+  * Clock and Power control register offsets
+@@ -50,6 +51,7 @@ struct lpc32xx_rtc {
+ 	unsigned char alarm_enabled;
+ 	struct rtc_device *rtc;
+ 	spinlock_t lock;
++	time64_t epoch;		/* time of counter value 0 */
+ };
+ 
+ static int lpc32xx_rtc_read_time(struct device *dev, struct rtc_time *time)
+@@ -58,7 +60,7 @@ static int lpc32xx_rtc_read_time(struct device *dev, struct rtc_time *time)
+ 	struct lpc32xx_rtc *rtc = dev_get_drvdata(dev);
+ 
+ 	elapsed_sec = rtc_readl(rtc, LPC32XX_RTC_UCOUNT);
+-	rtc_time64_to_tm(elapsed_sec, time);
++	rtc_time64_to_tm(elapsed_sec + rtc->epoch, time);
+ 
+ 	return 0;
+ }
+@@ -66,7 +68,7 @@ static int lpc32xx_rtc_read_time(struct device *dev, struct rtc_time *time)
+ static int lpc32xx_rtc_set_time(struct device *dev, struct rtc_time *time)
+ {
+ 	struct lpc32xx_rtc *rtc = dev_get_drvdata(dev);
+-	u32 secs = rtc_tm_to_time64(time);
++	u32 secs = rtc_tm_to_time64(time) - rtc->epoch;
+ 	u32 tmp;
+ 
+ 	spin_lock_irq(&rtc->lock);
+@@ -88,7 +90,8 @@ static int lpc32xx_rtc_read_alarm(struct device *dev,
+ {
+ 	struct lpc32xx_rtc *rtc = dev_get_drvdata(dev);
+ 
+-	rtc_time64_to_tm(rtc_readl(rtc, LPC32XX_RTC_MATCH0), &wkalrm->time);
++	rtc_time64_to_tm(rtc_readl(rtc, LPC32XX_RTC_MATCH0) + rtc->epoch,
++			 &wkalrm->time);
+ 	wkalrm->enabled = rtc->alarm_enabled;
+ 	wkalrm->pending = !!(rtc_readl(rtc, LPC32XX_RTC_INTSTAT) &
+ 		LPC32XX_RTC_INTSTAT_MATCH0);
+@@ -103,7 +106,7 @@ static int lpc32xx_rtc_set_alarm(struct device *dev,
+ 	unsigned long alarmsecs;
+ 	u32 tmp;
+ 
+-	alarmsecs = rtc_tm_to_time64(&wkalrm->time);
++	alarmsecs = rtc_tm_to_time64(&wkalrm->time) - rtc->epoch;
+ 
+ 	spin_lock_irq(&rtc->lock);
+ 
+@@ -236,8 +239,17 @@ static int lpc32xx_rtc_probe(struct platform_device *pdev)
+ 	if (IS_ERR(rtc->rtc))
+ 		return PTR_ERR(rtc->rtc);
+ 
++	/*
++	 * The counter counts seconds from the Unix epoch, or, if "nxp,epoch-year"
++	 * is given, from January 1st of that year (e.g. 2000 when the RTC is
++	 * shared with another OS that counts from there).
++	 */
++	if (!device_property_read_u32(&pdev->dev, "nxp,epoch-year", &tmp))
++		rtc->epoch = mktime64(tmp, 1, 1, 0, 0, 0);
++
+ 	rtc->rtc->ops = &lpc32xx_rtc_ops;
+-	rtc->rtc->range_max = U32_MAX;
++	rtc->rtc->range_min = rtc->epoch;
++	rtc->rtc->range_max = rtc->epoch + U32_MAX;
+ 
+ 	err = devm_rtc_register_device(rtc->rtc);
+ 	if (err)
+-- 
+2.53.0
+

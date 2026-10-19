@@ -1,7 +1,7 @@
 From aaff4660b9470ae09404e8125a5636de535fed33 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 00:18:09 +0200
-Subject: [PATCH 07/40] ARM: dts: pnx4008-p1i: add HCLK and the I2C controllers
+Subject: [PATCH 07/43] ARM: dts: pnx4008-p1i: add HCLK and the I2C controllers
 
 Add a fixed 104 MHz HCLK (read back from HCLKPLL_CTRL/HCLKDIV_CTRL on
 the device: 208 MHz PLL / 2) and the two I2C controllers at 100 kHz on

@@ -1,7 +1,7 @@
 From 74bc0b37213649120934b6631ae55db1bca4d1f9 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 22:46:00 +0200
-Subject: [PATCH 26/40] ARM: dts: pnx4008-p1i: fixed USB Ethernet gadget MAC
+Subject: [PATCH 26/43] ARM: dts: pnx4008-p1i: fixed USB Ethernet gadget MAC
  addresses
 
 So the PC side gets a stable interface name (enx025031000001).

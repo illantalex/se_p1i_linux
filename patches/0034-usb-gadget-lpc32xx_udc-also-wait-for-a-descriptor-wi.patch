@@ -1,7 +1,7 @@
 From 3ed19c558f795bc4f2388f6f9b69748cbb60022e Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 18 Oct 2026 16:26:34 +0200
-Subject: [PATCH 34/40] usb: gadget: lpc32xx_udc: also wait for a descriptor
+Subject: [PATCH 34/43] usb: gadget: lpc32xx_udc: also wait for a descriptor
  with no status yet
 
 On the PNX4008 the end of transfer interrupt can also come before the

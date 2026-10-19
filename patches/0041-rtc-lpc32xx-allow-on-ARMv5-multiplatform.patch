@@ -1,0 +1,31 @@
+From 7373bc7ecebe87a44a38b232f95490282d6fce5f Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 19 Oct 2026 22:38:26 +0200
+Subject: [PATCH 41/43] rtc: lpc32xx: allow on ARMv5 multiplatform
+
+The PNX4008 has the same RTC at 0x40024000 (verified on the Sony Ericsson
+P1i: counter and down-counter as in the LPC32xx, key register holding the
+driver's value), so let the driver build on ARCH_MULTI_V5 without
+ARCH_LPC32XX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/rtc/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
+index bb63edb50..b10499090 100644
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -1727,7 +1727,7 @@ config RTC_DRV_LPC24XX
+ 	  so, the module will be called rtc-lpc24xx.
+ 
+ config RTC_DRV_LPC32XX
+-	depends on ARCH_LPC32XX || COMPILE_TEST
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5 || COMPILE_TEST
+ 	tristate "NXP LPC32XX RTC"
+ 	help
+ 	  This enables support for the NXP RTC in the LPC32XX
+-- 
+2.53.0
+

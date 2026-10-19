@@ -1,7 +1,7 @@
 From f5ce19db7ab0eee28449d231f0666732269649a6 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sat, 17 Oct 2026 23:23:59 +0200
-Subject: [PATCH 31/40] ALSA: arm: PNX4008 audio DSP playback (stream adopted
+Subject: [PATCH 31/43] ALSA: arm: PNX4008 audio DSP playback (stream adopted
  from Symbian)
 
 The PNX4008's Teak DSP does all audio; the ARM feeds it PCM through a

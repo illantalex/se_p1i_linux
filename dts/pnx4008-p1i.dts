@@ -418,6 +418,21 @@
 			cd-gpios = <&gpio 4 0 GPIO_ACTIVE_LOW>;
 		};
 
+		/*
+		 * RTC, LPC32xx layout, kept running by Symbian (key register already holds the
+		 * driver's value, so it is not reset). Symbian counts seconds from 2000-01-01
+		 * (nxp,epoch-year): the counter read 2008-02-01 that way, the date Symbian gave
+		 * its files then. (start-year does not shift the epoch, it only marks values
+		 * below it as wrapped.)
+		 * No interrupt (alarm only): SIC1 20, the LPC32xx RTC line, reads active in
+		 * the raw status, so it is left off until verified.
+		 */
+		rtc@40024000 {
+			compatible = "nxp,lpc3220-rtc";
+			reg = <0x40024000 0x1000>;
+			nxp,epoch-year = <2000>;
+		};
+
 		gpio: gpio@40028000 {
 			compatible = "nxp,lpc3220-gpio";
 			reg = <0x40028000 0x1000>;
