@@ -15,10 +15,17 @@
  * (00 00 (chtype << 4) | 1, (priority << 3) | phyid, endpoint) was refused (00 30 ...) for
  * every channel type and endpoint tried, as was every other service (DECM, video, debug,
  * datagram with connection ids 0-22, RFM, utility): the channels seem fixed by Symbian's
- * AT*SECAIF setup. Of channels 1-31, only 1 and 2 (BServer's CAIFMUX::1 and ::2) answer
- * data: they return the message (after the 0x00 service byte) with bit 7 of its second
- * word cleared, e.g. 0c 00 00 00 99 ... -> 0c 00 00 00 19 ...; probably the bridge bouncing
- * a message for an unknown address. Channel 22 (notifications) takes no input.
+ * AT*SECAIF setup. Of channels 1-31, only 1 and 2 answer data, and they are loopbacks: they
+ * return whatever they get, even plain text ("ABC"), with the first byte set to 0 and bit 7
+ * of the fifth byte cleared (0c 00 00 00 99 ... -> 0c 00 00 00 19 ...).
+ *
+ * The OPA traffic (EMP's proxy/stub manager, PSM) runs over a CAIF DECM link on channel 22
+ * in both directions: frame = 0x16, segment flag (0 = last), PSM PDU (at most 256 bytes per
+ * segment). A PDU starts with a u32 type; the modem's notifications are type 12, one-way
+ * calls: [12][object id][length][method][arguments]. Read from the M600 CCPU firmware
+ * (same platform): 2/3 query interface, 4/5 create instance, 8/9 invoke ([8][stub id]
+ * [request id][interface pointer][?], method at offset 20), 13/14 add reference, 15/16
+ * release. An invoke needs the stub id and interface pointer Symbian got at start-up.
  *
  * After "reset" (tried 2026-10-18; the phone keeps running: BB_RST# only resets the DB2001,
  * not the AB2010 power chip) the modem stays silent: no boot output and no answer to AT on
