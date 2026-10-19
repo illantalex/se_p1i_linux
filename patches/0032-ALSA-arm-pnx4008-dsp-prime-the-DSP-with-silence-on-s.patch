@@ -1,0 +1,41 @@
+From 2a61eebe4546cf0b0e446968987a6496be876c01 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 17 Oct 2026 23:51:43 +0200
+Subject: [PATCH 32/37] ALSA: arm: pnx4008-dsp: prime the DSP with silence on
+ start
+
+Taking two periods at trigger time ran the position ahead of an application
+that starts after one period (mpg123): immediate underrun, and mpg123 gave
+up on the short write. Prime both halves with silence and take data only
+on the DSP's requests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index c92377dbb..695ff2cd8 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -178,12 +178,14 @@ static int pnx4008_dsp_trigger(struct snd_pcm_substream *substream, int cmd)
+ 		spin_lock(&dsp->lock);
+ 		/*
+ 		 * The DSP waits with its request pending since the last half it took (or
+-		 * since Symbian's last one): drop that request and give it a full pair.
++		 * since Symbian's last one): drop that request and prime both halves with
++		 * silence. Data is only taken on the DSP's requests, so the position never
++		 * runs ahead of what the application has written (it may start after a
++		 * single period).
+ 		 */
+ 		apbp_wr(dsp, APBP_PCLEAR, STREAM_SEM);
+ 		dsp->half = 0;
+-		pnx4008_dsp_fill(dsp, substream->runtime);
+-		pnx4008_dsp_fill(dsp, substream->runtime);
++		memset_io(dsp->area, 0, 2 * HALF_BYTES);
+ 		pnx4008_dsp_psem(dsp, STREAM_SEM);
+ 		dsp->running = true;
+ 		spin_unlock(&dsp->lock);
+-- 
+2.53.0
+

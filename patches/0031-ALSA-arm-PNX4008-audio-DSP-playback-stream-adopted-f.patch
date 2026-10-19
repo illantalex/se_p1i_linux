@@ -1,0 +1,390 @@
+From f5ce19db7ab0eee28449d231f0666732269649a6 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 17 Oct 2026 23:23:59 +0200
+Subject: [PATCH 31/37] ALSA: arm: PNX4008 audio DSP playback (stream adopted
+ from Symbian)
+
+The PNX4008's Teak DSP does all audio; the ARM feeds it PCM through a
+buffer in the internal SRAM, signalled with host-port semaphores. Linux
+cannot set up a playback stream on the DSP yet, but one that Symbian
+started survives the handover, so the boot loader plays silence before
+handing over and this driver feeds that stream: 44.1 kHz S16_LE stereo,
+two 1008-byte halves at SRAM 0x08001000, semaphore 2 both ways (PSEM with
+the DSP clock request held), 175 periods a second. The semaphores are
+polled with a 1 ms hrtimer while playing.
+
+DTS: audio-dsp node, soc ranges for the internal SRAM.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts |  15 +-
+ sound/arm/Kconfig                 |  10 ++
+ sound/arm/Makefile                |   3 +
+ sound/arm/pnx4008-dsp.c           | 290 ++++++++++++++++++++++++++++++
+ 4 files changed, 316 insertions(+), 2 deletions(-)
+ create mode 100644 sound/arm/pnx4008-dsp.c
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index cfd5f1664..34ff17e3b 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -183,8 +183,9 @@ soc {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+-		/* AHB peripherals (Memory Stick host, USB) and APB peripherals */
+-		ranges = <0x20000000 0x20000000 0x00100000>,
++		/* Internal SRAM, AHB peripherals (Memory Stick host, USB), APB peripherals */
++		ranges = <0x08000000 0x08000000 0x00010000>,
++			 <0x20000000 0x20000000 0x00100000>,
+ 			 <0x31020000 0x31020000 0x00001000>,
+ 			 <0x40000000 0x40000000 0x10000000>;
+ 
+@@ -384,6 +385,16 @@ usb_transceiver: usb-transceiver@2c {
+ 			};
+ 		};
+ 
++		/*
++		 * Audio DSP playback: host port, DSPCLKCTRL, and the two halves of the shared
++		 * buffer's area 0 in the internal SRAM (the stream itself is set up by Symbian
++		 * before the handover).
++		 */
++		audio-dsp@400c0000 {
++			compatible = "nxp,pnx4008-dsp-pcm";
++			reg = <0x400c0000 0x40>, <0x400e8064 0x4>, <0x08001000 0x7e0>;
++		};
++
+ 		memstick@20080000 {
+ 			compatible = "nxp,pnx4008-ms";
+ 			reg = <0x20080000 0x1000>, <0x40004080 0x4>;
+diff --git a/sound/arm/Kconfig b/sound/arm/Kconfig
+index dea2c661b..f227b407b 100644
+--- a/sound/arm/Kconfig
++++ b/sound/arm/Kconfig
+@@ -28,6 +28,16 @@ config SND_PXA2XX_AC97
+ 	  Say Y or M if you want to support any AC97 codec attached to
+ 	  the PXA2xx AC97 interface.
+ 
++config SND_PNX4008_DSP
++	tristate "NXP PNX4008 audio DSP playback"
++	depends on ARCH_MULTI_V5 || COMPILE_TEST
++	depends on OF
++	select SND_PCM
++	help
++	  Playback through the audio DSP of the NXP PNX4008 (Sony Ericsson
++	  P1i). The DSP's playback stream has to be set up by the boot loader
++	  (linuxhandover on Symbian); this driver feeds it.
++
+ endif	# SND_ARM
+ 
+ config SND_PXA2XX_LIB
+diff --git a/sound/arm/Makefile b/sound/arm/Makefile
+index 34c769489..1c14a5b3b 100644
+--- a/sound/arm/Makefile
++++ b/sound/arm/Makefile
+@@ -12,3 +12,6 @@ snd-pxa2xx-lib-$(CONFIG_SND_PXA2XX_LIB_AC97)	+= pxa2xx-ac97-lib.o
+ 
+ obj-$(CONFIG_SND_PXA2XX_AC97)	+= snd-pxa2xx-ac97.o
+ snd-pxa2xx-ac97-objs		:= pxa2xx-ac97.o
++
++obj-$(CONFIG_SND_PNX4008_DSP)	+= snd-pnx4008-dsp.o
++snd-pnx4008-dsp-objs		:= pnx4008-dsp.o
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+new file mode 100644
+index 000000000..c92377dbb
+--- /dev/null
++++ b/sound/arm/pnx4008-dsp.c
+@@ -0,0 +1,290 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ALSA playback through the audio DSP of the NXP PNX4008, as on the Sony Ericsson P1i.
++ *
++ * The PNX4008 has a Teak DSP ("XPERTTeak") that does all audio: it reads PCM from a buffer
++ * shared with the ARM in the internal SRAM, mixes, resamples and filters it, and feeds the
++ * on-chip codec. It is driven through a host port (APBP, the register layout of the Nintendo
++ * 3DS's Teak): command/reply registers for messages and semaphores in both directions.
++ *
++ * Linux cannot set up a playback stream on the DSP yet: Symbian's sequence of messages is
++ * accepted, but the DSP never creates the stream. A stream Symbian started survives the
++ * handover to Linux though, so the boot loader (linuxhandover on Symbian) plays silence
++ * through Symbian's audio stream API and hands over with the stream running. This driver
++ * adopts that stream, Symbian's "area 0":
++ *
++ *  - 44.1 kHz, 16-bit little-endian, stereo;
++ *  - two 1008-byte halves (252 frames each) at shared buffer + 0x1000 (internal SRAM);
++ *  - the DSP raises its semaphore 2 whenever it has taken a half; the ARM fills the next
++ *    half and sets PSEM bit 2 (with the DSP clock request held, as Symbian's dspextension
++ *    does) -- 175 times a second.
++ *
++ * The semaphores are polled with an hrtimer while the stream plays (their interrupt is not
++ * used yet). Without a stream from Symbian (PMASK bit 2 masked) playback stays silent.
++ */
++
++#include <linux/delay.h>
++#include <linux/hrtimer.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++#include <sound/core.h>
++#include <sound/initval.h>
++#include <sound/pcm.h>
++
++/* Host port (APBP), 16-bit registers */
++#define APBP_PSEM	0x10	/* ARM -> DSP semaphores */
++#define APBP_PMASK	0x14	/* DSP -> ARM semaphore interrupt mask */
++#define APBP_PCLEAR	0x18	/* acknowledge DSP -> ARM semaphores */
++#define APBP_SEM	0x1c	/* DSP -> ARM semaphores */
++
++#define DSPCLKCTRL_REQ	BIT(9)	/* DSP clock request, held while setting PSEM */
++
++#define STREAM_SEM	BIT(2)	/* area 0 semaphore, both directions */
++#define HALF_BYTES	1008
++#define RATE		44100
++#define POLL_NS		(1 * NSEC_PER_MSEC)
++
++struct pnx4008_dsp {
++	struct device *dev;
++	void __iomem *apbp;
++	void __iomem *dspclkctrl;
++	void __iomem *area;		/* two halves in the internal SRAM */
++	struct snd_card *card;
++	struct snd_pcm_substream *substream;
++	struct hrtimer timer;
++	spinlock_t lock;
++	unsigned int half;		/* half the DSP takes next */
++	unsigned int pos;		/* bytes into the ALSA buffer */
++	bool running;
++};
++
++static u16 apbp_rd(struct pnx4008_dsp *dsp, unsigned int reg)
++{
++	return readw(dsp->apbp + reg);
++}
++
++static void apbp_wr(struct pnx4008_dsp *dsp, unsigned int reg, u16 val)
++{
++	writew(val, dsp->apbp + reg);
++}
++
++/* dspextension export #12: signal the DSP, its clock request held. */
++static void pnx4008_dsp_psem(struct pnx4008_dsp *dsp, u16 bits)
++{
++	u32 clk = readl(dsp->dspclkctrl);
++
++	writel(clk | DSPCLKCTRL_REQ, dsp->dspclkctrl);
++	readl(dsp->dspclkctrl);
++	readl(dsp->dspclkctrl);
++	readl(dsp->dspclkctrl);
++	apbp_wr(dsp, APBP_PSEM, apbp_rd(dsp, APBP_PSEM) | bits);
++	writel(clk, dsp->dspclkctrl);
++}
++
++/* Copy the next period of the ALSA buffer into the half the DSP takes next. */
++static void pnx4008_dsp_fill(struct pnx4008_dsp *dsp, struct snd_pcm_runtime *runtime)
++{
++	void __iomem *half = dsp->area + dsp->half * HALF_BYTES;
++
++	memcpy_toio(half, runtime->dma_area + dsp->pos, HALF_BYTES);
++	dsp->pos += HALF_BYTES;
++	if (dsp->pos >= snd_pcm_lib_buffer_bytes(dsp->substream))
++		dsp->pos = 0;
++	dsp->half ^= 1;
++}
++
++static enum hrtimer_restart pnx4008_dsp_poll(struct hrtimer *timer)
++{
++	struct pnx4008_dsp *dsp = container_of(timer, struct pnx4008_dsp, timer);
++	struct snd_pcm_substream *substream;
++	bool elapsed = false;
++	u16 sem;
++
++	spin_lock(&dsp->lock);
++	if (!dsp->running) {
++		spin_unlock(&dsp->lock);
++		return HRTIMER_NORESTART;
++	}
++	substream = dsp->substream;
++	sem = apbp_rd(dsp, APBP_SEM);
++	if (sem)
++		apbp_wr(dsp, APBP_PCLEAR, sem);	/* others are Symbian's notifications */
++	if (sem & STREAM_SEM) {
++		pnx4008_dsp_fill(dsp, substream->runtime);
++		pnx4008_dsp_psem(dsp, STREAM_SEM);
++		elapsed = true;
++	}
++	spin_unlock(&dsp->lock);
++
++	if (elapsed)
++		snd_pcm_period_elapsed(substream);
++	hrtimer_forward_now(timer, ns_to_ktime(POLL_NS));
++	return HRTIMER_RESTART;
++}
++
++static const struct snd_pcm_hardware pnx4008_dsp_hw = {
++	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
++		SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
++	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_44100,
++	.rate_min = RATE,
++	.rate_max = RATE,
++	.channels_min = 2,
++	.channels_max = 2,
++	.buffer_bytes_max = 64 * HALF_BYTES,
++	.period_bytes_min = HALF_BYTES,
++	.period_bytes_max = HALF_BYTES,
++	.periods_min = 2,
++	.periods_max = 64,
++};
++
++static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
++{
++	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++
++	substream->runtime->hw = pnx4008_dsp_hw;
++	dsp->substream = substream;
++	return 0;
++}
++
++static int pnx4008_dsp_close(struct snd_pcm_substream *substream)
++{
++	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++
++	hrtimer_cancel(&dsp->timer);
++	dsp->substream = NULL;
++	return 0;
++}
++
++static int pnx4008_dsp_prepare(struct snd_pcm_substream *substream)
++{
++	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++
++	dsp->pos = 0;
++	return 0;
++}
++
++static int pnx4008_dsp_trigger(struct snd_pcm_substream *substream, int cmd)
++{
++	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++	case SNDRV_PCM_TRIGGER_RESUME:
++		spin_lock(&dsp->lock);
++		/*
++		 * The DSP waits with its request pending since the last half it took (or
++		 * since Symbian's last one): drop that request and give it a full pair.
++		 */
++		apbp_wr(dsp, APBP_PCLEAR, STREAM_SEM);
++		dsp->half = 0;
++		pnx4008_dsp_fill(dsp, substream->runtime);
++		pnx4008_dsp_fill(dsp, substream->runtime);
++		pnx4008_dsp_psem(dsp, STREAM_SEM);
++		dsp->running = true;
++		spin_unlock(&dsp->lock);
++		hrtimer_start(&dsp->timer, ns_to_ktime(POLL_NS), HRTIMER_MODE_REL);
++		return 0;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++		spin_lock(&dsp->lock);
++		dsp->running = false;
++		/* The DSP plays both halves once more: make that silence. */
++		memset_io(dsp->area, 0, 2 * HALF_BYTES);
++		spin_unlock(&dsp->lock);
++		return 0;
++	}
++	return -EINVAL;
++}
++
++static snd_pcm_uframes_t pnx4008_dsp_pointer(struct snd_pcm_substream *substream)
++{
++	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++
++	return bytes_to_frames(substream->runtime, READ_ONCE(dsp->pos));
++}
++
++static const struct snd_pcm_ops pnx4008_dsp_ops = {
++	.open = pnx4008_dsp_open,
++	.close = pnx4008_dsp_close,
++	.prepare = pnx4008_dsp_prepare,
++	.trigger = pnx4008_dsp_trigger,
++	.pointer = pnx4008_dsp_pointer,
++};
++
++static int pnx4008_dsp_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct pnx4008_dsp *dsp;
++	struct snd_card *card;
++	struct snd_pcm *pcm;
++	int ret;
++
++	ret = snd_devm_card_new(dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1, THIS_MODULE,
++				sizeof(*dsp), &card);
++	if (ret)
++		return ret;
++	dsp = card->private_data;
++	dsp->dev = dev;
++	dsp->card = card;
++	spin_lock_init(&dsp->lock);
++	hrtimer_init(&dsp->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	dsp->timer.function = pnx4008_dsp_poll;
++
++	dsp->apbp = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(dsp->apbp))
++		return PTR_ERR(dsp->apbp);
++	dsp->dspclkctrl = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(dsp->dspclkctrl))
++		return PTR_ERR(dsp->dspclkctrl);
++	dsp->area = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(dsp->area))
++		return PTR_ERR(dsp->area);
++
++	if (apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)
++		dev_warn(dev, "no audio stream left by Symbian (PMASK %04x): playback will be silent\n",
++			 apbp_rd(dsp, APBP_PMASK));
++	else
++		dev_info(dev, "adopting Symbian's audio stream (PMASK %04x, SEM %04x)\n",
++			 apbp_rd(dsp, APBP_PMASK), apbp_rd(dsp, APBP_SEM));
++
++	strscpy(card->driver, "PNX4008-DSP", sizeof(card->driver));
++	strscpy(card->shortname, "PNX4008 DSP", sizeof(card->shortname));
++	strscpy(card->longname, "NXP PNX4008 audio DSP (stream adopted from Symbian)",
++		sizeof(card->longname));
++
++	ret = snd_pcm_new(card, "PNX4008 DSP", 0, 1, 0, &pcm);
++	if (ret)
++		return ret;
++	pcm->private_data = dsp;
++	strscpy(pcm->name, "PNX4008 DSP", sizeof(pcm->name));
++	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pnx4008_dsp_ops);
++	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS, NULL,
++				       pnx4008_dsp_hw.buffer_bytes_max,
++				       pnx4008_dsp_hw.buffer_bytes_max);
++
++	return snd_card_register(card);
++}
++
++static const struct of_device_id pnx4008_dsp_of_match[] = {
++	{ .compatible = "nxp,pnx4008-dsp-pcm" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pnx4008_dsp_of_match);
++
++static struct platform_driver pnx4008_dsp_driver = {
++	.probe = pnx4008_dsp_probe,
++	.driver = {
++		.name = "pnx4008-dsp-pcm",
++		.of_match_table = pnx4008_dsp_of_match,
++	},
++};
++module_platform_driver(pnx4008_dsp_driver);
++
++MODULE_DESCRIPTION("NXP PNX4008 audio DSP playback (stream adopted from Symbian)");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

@@ -1,0 +1,49 @@
+From c7576df7bf572a98adfc680a9f4eb2434ed36543 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 17 Oct 2026 23:03:42 +0200
+Subject: [PATCH 30/37] usb: gadget: lpc32xx_udc: ignore an end of transfer
+ while the DD is in service
+
+On the PNX4008 (Sony Ericsson P1i, g_ether) the end-of-transfer interrupt
+sometimes comes while the DMA descriptor is still being serviced (status
+0x5c00022: 1472 bytes of a 1514-byte frame done, the last short packet
+still to come). The handler then disabled DMA mid-transfer and the OUT
+endpoint stalled until the cable was replugged. Clear the interrupt and
+leave the transfer running in that case; wait up to 20 us for the status
+write-back otherwise, as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index aff32d809..f893567c1 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -2003,8 +2003,21 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 	 */
+ 	for (i = 0; i < 20 && !(READ_ONCE(dd->dd_status) & DD_STATUS_DD_RETIRED); i++)
+ 		udelay(1);
++	if (!(dd->dd_status & DD_STATUS_DD_RETIRED) &&
++	    (dd->dd_status & DD_STATUS_STS_MASK) == DD_STATUS_STS_BS) {
++		/*
++		 * Seen on the PNX4008 with g_ether: end of transfer signalled while the
++		 * descriptor is still being serviced (status 0x5c00022: 1472 of a 1514-byte
++		 * frame, the last short packet still to come). Disabling DMA here loses the
++		 * transfer and stalls the endpoint for good, so leave it running and wait for
++		 * the real end of transfer.
++		 */
++		writel((1 << ep->hwep_num), USBD_EOTINTCLR(udc->udp_baseaddr));
++		ep_dbg(ep, "early end of transfer ignored (status 0x%x)\n", dd->dd_status);
++		return;
++	}
+ 	if (!(dd->dd_status & DD_STATUS_DD_RETIRED))
+-		ep_warn(ep, "DMA descriptor did not retire\n");
++		ep_warn(ep, "DMA descriptor did not retire (status 0x%x)\n", dd->dd_status);
+ 
+ 	/* Disable DMA */
+ 	udc_ep_dma_disable(udc, ep->hwep_num);
+-- 
+2.53.0
+

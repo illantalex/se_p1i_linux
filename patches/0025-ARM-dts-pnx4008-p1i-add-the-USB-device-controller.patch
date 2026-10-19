@@ -1,7 +1,7 @@
 From a86dc655bf2dc934e2defbc0f1746248040a823e Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 22:43:13 +0200
-Subject: [PATCH 25/27] ARM: dts: pnx4008-p1i: add the USB device controller
+Subject: [PATCH 25/37] ARM: dts: pnx4008-p1i: add the USB device controller
 
 USB block at 0x31020000 (LPC32xx layout and interrupts): clock provider,
 device controller, its I2C bus with the ISP1301-compatible ST STOTG04 at

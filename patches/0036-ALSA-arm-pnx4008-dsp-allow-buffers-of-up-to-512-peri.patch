@@ -1,0 +1,62 @@
+From 58f80519052798959238f07d6a945682fd5fa035 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 18 Oct 2026 22:22:25 +0200
+Subject: [PATCH 36/37] ALSA: arm: pnx4008-dsp: allow buffers of up to 512
+ periods (2.9 s)
+
+Reading from the Memory Stick (polled) or resampling can keep a player from
+running for ~300 ms, more than the 64-period buffer (0.37 s) covers. The
+buffer is only touched by the CPU (copied into the DSP's SRAM), so it is now
+vmalloc'ed per stream in the size the player asks for, instead of a
+physically contiguous preallocation.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 695ff2cd8..4e840f457 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -46,6 +46,12 @@
+ #define HALF_BYTES	1008
+ #define RATE		44100
+ #define POLL_NS		(1 * NSEC_PER_MSEC)
++/*
++ * Up to 512 periods (2.9 s): reading from the Memory Stick (polled) or resampling can keep
++ * a player from running for ~300 ms. The buffer is only touched by the CPU (copied into
++ * the DSP's SRAM), so it is vmalloc'ed per stream in the size the player asks for.
++ */
++#define PERIODS_MAX	512
+ 
+ struct pnx4008_dsp {
+ 	struct device *dev;
+@@ -134,11 +140,11 @@ static const struct snd_pcm_hardware pnx4008_dsp_hw = {
+ 	.rate_max = RATE,
+ 	.channels_min = 2,
+ 	.channels_max = 2,
+-	.buffer_bytes_max = 64 * HALF_BYTES,
++	.buffer_bytes_max = PERIODS_MAX * HALF_BYTES,
+ 	.period_bytes_min = HALF_BYTES,
+ 	.period_bytes_max = HALF_BYTES,
+ 	.periods_min = 2,
+-	.periods_max = 64,
++	.periods_max = PERIODS_MAX,
+ };
+ 
+ static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
+@@ -266,9 +272,7 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	pcm->private_data = dsp;
+ 	strscpy(pcm->name, "PNX4008 DSP", sizeof(pcm->name));
+ 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pnx4008_dsp_ops);
+-	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS, NULL,
+-				       pnx4008_dsp_hw.buffer_bytes_max,
+-				       pnx4008_dsp_hw.buffer_bytes_max);
++	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
+ 
+ 	return snd_card_register(card);
+ }
+-- 
+2.53.0
+

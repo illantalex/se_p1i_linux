@@ -1,0 +1,116 @@
+From d1bd6a00ab4307c53d1e330a095f0b030f10d2ef Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 18 Oct 2026 10:02:24 +0200
+Subject: [PATCH 33/37] usb: gadget: lpc32xx_udc: re-check a descriptor whose
+ end of transfer came early
+
+Ignoring an end of transfer that arrives while the descriptor is still in
+service (c7576df7b) traded the warning for a silent stall when no second
+interrupt came. Clear the EOT and new-DD interrupts and look again from a
+timer (one jiffy); after three looks give the request up as before (EOT
+prior to completion) and restart the queue, so only that transfer is lost.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 43 +++++++++++++++++++++++++---
+ 1 file changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index f893567c1..fca363a19 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -112,6 +112,10 @@ struct lpc32xx_ep {
+ 	u32                     totalints;
+ 
+ 	bool			wedge;
++
++	/* Re-check of a DMA descriptor whose end of transfer came early (PNX4008) */
++	struct timer_list	dd_timer;
++	unsigned int		dd_waits;
+ };
+ 
+ enum atx_type {
+@@ -1977,6 +1981,8 @@ static void udc_handle_eps(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ }
+ 
+ 
++#define DD_MAX_WAITS	3	/* jiffies to wait for a descriptor still in service */
++
+ /* DMA end of transfer completion */
+ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ {
+@@ -2012,10 +2018,20 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 		 * transfer and stalls the endpoint for good, so leave it running and wait for
+ 		 * the real end of transfer.
+ 		 */
+-		writel((1 << ep->hwep_num), USBD_EOTINTCLR(udc->udp_baseaddr));
+-		ep_dbg(ep, "early end of transfer ignored (status 0x%x)\n", dd->dd_status);
+-		return;
++		if (ep->dd_waits < DD_MAX_WAITS) {
++			writel((1 << ep->hwep_num), USBD_EOTINTCLR(udc->udp_baseaddr));
++			writel((1 << ep->hwep_num), USBD_NDDRTINTCLR(udc->udp_baseaddr));
++			ep->dd_waits++;
++			/* No second interrupt is guaranteed: look again from a timer. */
++			mod_timer(&ep->dd_timer, jiffies + 1);
++			ep_dbg(ep, "early end of transfer ignored (status 0x%x)\n",
++			       dd->dd_status);
++			return;
++		}
++		/* Still in service: give up this request below (EOT prior to completion). */
+ 	}
++	ep->dd_waits = 0;
++	del_timer(&ep->dd_timer);
+ 	if (!(dd->dd_status & DD_STATUS_DD_RETIRED))
+ 		ep_warn(ep, "DMA descriptor did not retire (status 0x%x)\n", dd->dd_status);
+ 
+@@ -2131,6 +2147,19 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 
+ }
+ 
++/* Timer: a descriptor whose end of transfer came early, looked at again. */
++static void udc_dd_timer(struct timer_list *t)
++{
++	struct lpc32xx_ep *ep = from_timer(ep, t, dd_timer);
++	struct lpc32xx_udc *udc = ep->udc;
++	unsigned long flags;
++
++	spin_lock_irqsave(&udc->lock, flags);
++	if (ep->dd_waits && ep->req_pending && !list_empty(&ep->queue))
++		udc_handle_dma_ep(udc, ep);
++	spin_unlock_irqrestore(&udc->lock, flags);
++}
++
+ /*
+  *
+  * Endpoint 0 functions
+@@ -3032,8 +3061,10 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
+ 	if (!udc)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i <= 15; i++)
++	for (i = 0; i <= 15; i++) {
+ 		udc->ep[i].udc = udc;
++		timer_setup(&udc->ep[i].dd_timer, udc_dd_timer, 0);
++	}
+ 	udc->gadget.ep0 = &udc->ep[0].ep;
+ 
+ 	/* init software state */
+@@ -3211,11 +3242,15 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
+ static int lpc32xx_udc_remove(struct platform_device *pdev)
+ {
+ 	struct lpc32xx_udc *udc = platform_get_drvdata(pdev);
++	int i;
+ 
+ 	usb_del_gadget_udc(&udc->gadget);
+ 	if (udc->driver)
+ 		return -EBUSY;
+ 
++	for (i = 0; i < NUM_ENDPOINTS; i++)
++		del_timer_sync(&udc->ep[i].dd_timer);
++
+ 	udc_clk_set(udc, 1);
+ 	udc_disable(udc);
+ 	pullup(udc, 0);
+-- 
+2.53.0
+

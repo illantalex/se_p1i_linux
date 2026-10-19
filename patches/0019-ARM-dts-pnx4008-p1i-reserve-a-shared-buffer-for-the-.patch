@@ -1,7 +1,7 @@
 From 3796a3772754f59bdf71d1072e6219b897ae5aa1 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Thu, 15 Oct 2026 22:30:22 +0200
-Subject: [PATCH 19/27] ARM: dts: pnx4008-p1i: reserve a shared buffer for the
+Subject: [PATCH 19/37] ARM: dts: pnx4008-p1i: reserve a shared buffer for the
  audio DSP
 
 The Teak DSP firmware is given the physical address of a shared buffer

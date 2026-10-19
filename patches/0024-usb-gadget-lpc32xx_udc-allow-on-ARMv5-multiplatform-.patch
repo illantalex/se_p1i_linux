@@ -1,7 +1,7 @@
 From 871bb0726f593a076f93d93b1c31bf66748c40dd Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 22:43:12 +0200
-Subject: [PATCH 24/27] usb: gadget: lpc32xx_udc: allow on ARMv5 multiplatform,
+Subject: [PATCH 24/37] usb: gadget: lpc32xx_udc: allow on ARMv5 multiplatform,
  support probe deferral
 
 The PNX4008 has the same USB device controller as the LPC32xx; let the

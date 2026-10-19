@@ -1,0 +1,149 @@
+From 82c50b76c1d6151f27fde634697811a8391894b7 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 17 Oct 2026 20:33:54 +0200
+Subject: [PATCH 29/37] usb: gadget: lpc32xx_udc: keep the endpoint running
+ after a DMA error
+
+After a DMA error (or a descriptor reporting anything but normal completion
+or underrun) udc_handle_dma_ep() completed the request and returned without
+starting the next queued one. lpc32xx_ep_queue() only starts DMA when it
+queues onto an empty list, so with g_ether's several queued rx requests the
+OUT endpoint stalled for good: on the PNX4008 (Sony Ericsson P1i) the USB
+network died after a few MB until the cable was replugged.
+
+- error paths fall through to the restart of the queue;
+- data overrun (DD status 1000b; DD_STATUS_STS_DOR was 0x08 instead of 0x10)
+  completes the request with -EOVERFLOW, which gadget drivers drop and
+  resubmit, instead of being reported as a system error;
+- also wait up to 20 us for the descriptor to be retired, the PNX4008 can
+  raise end-of-transfer just before writing the status back;
+- the restart skips starting DMA when the gadget driver already queued and
+  started a request during the giveback.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 47 ++++++++++++++++++++--------
+ 1 file changed, 34 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index dc57b9e5c..aff32d809 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -339,7 +339,7 @@ struct lpc32xx_usbd_dd {
+ #define DD_STATUS_STS_BS	0x02 /* Being serviced */
+ #define DD_STATUS_STS_NC	0x04 /* Normal completion */
+ #define DD_STATUS_STS_DUR	0x06 /* Data underrun (short packet) */
+-#define DD_STATUS_STS_DOR	0x08 /* Data overrun */
++#define DD_STATUS_STS_DOR	0x10 /* Data overrun */
+ #define DD_STATUS_STS_SE	0x12 /* System error */
+ #define DD_STATUS_PKT_VAL	0x20 /* Packet valid */
+ #define DD_STATUS_LSB_EX	0x40 /* LS byte extracted (ATLE) */
+@@ -1981,6 +1981,7 @@ static void udc_handle_eps(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ {
+ 	u32 status;
++	int i;
+ 	struct lpc32xx_request *req;
+ 	struct lpc32xx_usbd_dd_gad *dd;
+ 
+@@ -1995,7 +1996,13 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 	}
+ 	dd = req->dd_desc_ptr;
+ 
+-	/* DMA descriptor should always be retired for this call */
++	/*
++	 * DMA descriptor should always be retired for this call. On the PNX4008 the
++	 * end-of-transfer interrupt can arrive just before the controller has written the
++	 * status word back, so give it a moment: the status and count are read from it below.
++	 */
++	for (i = 0; i < 20 && !(READ_ONCE(dd->dd_status) & DD_STATUS_DD_RETIRED); i++)
++		udelay(1);
+ 	if (!(dd->dd_status & DD_STATUS_DD_RETIRED))
+ 		ep_warn(ep, "DMA descriptor did not retire\n");
+ 
+@@ -2010,13 +2017,12 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 		writel((1 << ep->hwep_num),
+ 			     USBD_SYSERRTINTCLR(udc->udp_baseaddr));
+ 		ep_err(ep, "AHB critical error!\n");
+-		ep->req_pending = 0;
+ 
+ 		/* The error could have occurred on a packet of a multipacket
+ 		 * transfer, so recovering the transfer is not possible. Close
+ 		 * the request with an error */
+ 		done(ep, req, -ECONNABORTED);
+-		return;
++		goto next;
+ 	}
+ 
+ 	/* Handle the current DD's status */
+@@ -2024,20 +2030,27 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 	switch (status & DD_STATUS_STS_MASK) {
+ 	case DD_STATUS_STS_NS:
+ 		/* DD not serviced? This shouldn't happen! */
+-		ep->req_pending = 0;
+ 		ep_err(ep, "DMA critical EP error: DD not serviced (0x%x)!\n",
+ 		       status);
+-
+ 		done(ep, req, -ECONNABORTED);
+-		return;
++		goto next;
+ 
+ 	case DD_STATUS_STS_BS:
+ 		/* Interrupt only fires on EOT - This shouldn't happen! */
+-		ep->req_pending = 0;
+ 		ep_err(ep, "DMA critical EP error: EOT prior to service completion (0x%x)!\n",
+ 		       status);
+ 		done(ep, req, -ECONNABORTED);
+-		return;
++		goto next;
++
++	case DD_STATUS_STS_DOR:
++		/*
++		 * The packet did not fit into the rest of the buffer (seen on the PNX4008
++		 * with g_ether under load). Only this request is lost: complete it with
++		 * an error the gadget driver drops and resubmits.
++		 */
++		ep_warn(ep, "DMA data overrun (0x%x), request dropped\n", status);
++		done(ep, req, -EOVERFLOW);
++		goto next;
+ 
+ 	case DD_STATUS_STS_NC:
+ 	case DD_STATUS_STS_DUR:
+@@ -2046,12 +2059,11 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 		break;
+ 
+ 	default:
+-		/* Data overrun, system error, or unknown */
+-		ep->req_pending = 0;
++		/* System error or unknown */
+ 		ep_err(ep, "DMA critical EP error: System error (0x%x)!\n",
+ 		       status);
+ 		done(ep, req, -ECONNABORTED);
+-		return;
++		goto next;
+ 	}
+ 
+ 	/* ISO endpoints are handled differently */
+@@ -2085,9 +2097,18 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 	/* Transfer request is complete */
+ 	done(ep, req, 0);
+ 
+-	/* Start another request if ready */
++next:
++	/*
++	 * Start another request if ready. Also after an error: lpc32xx_ep_queue() only
++	 * starts DMA when it queues onto an empty list, so requests already waiting
++	 * would never be started and the endpoint would stall for good. done() drops the
++	 * lock for the giveback, during which the gadget driver may have queued and
++	 * started a request already (req_pending).
++	 */
+ 	udc_clearep_getsts(udc, ep->hwep_num);
+ 	if (!list_empty((&ep->queue))) {
++		if (ep->req_pending)
++			return;
+ 		if (ep->is_in)
+ 			udc_ep_in_req_dma(udc, ep);
+ 		else
+-- 
+2.53.0
+

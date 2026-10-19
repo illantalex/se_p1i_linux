@@ -1,0 +1,40 @@
+From c83b96f05e963cd1de00a013df3b6fc5d00e2dbd Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 17 Oct 2026 19:20:04 +0200
+Subject: [PATCH 28/37] ARM: dts: pnx4008-p1i: reserve 384 KB of SDRAM for the
+ audio DSP's modules
+
+The DSP's codec module (316608 bytes) and SRC filter coefficients (51458
+bytes) are loaded into SDRAM and announced to it with message 12, at the
+same 0x4E000 offset Symbian uses. The shared buffer moved to the internal
+SRAM, so the old 64 KB reservation is replaced.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 384e4dc64..cfd5f1664 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -76,9 +76,13 @@ framebuffer_mem: framebuffer@81000000 {
+ 			no-map;
+ 		};
+ 
+-		/* Audio DSP shared buffer (dsptool experiments; the DSP reads it by physical address). */
+-		dsp_shared: dsp-shared@81100000 {
+-			reg = <0x81100000 0x10000>;
++		/*
++		 * Audio DSP modules (DspCodecModule.bin at +0, DspSrcFilterCoefs.bin at +0x4E000 as
++		 * in Symbian's layout), announced to the DSP with message 12; it reads them by
++		 * physical address. The shared buffer itself is in the internal SRAM (0x08000000).
++		 */
++		dsp_modules: dsp-modules@81100000 {
++			reg = <0x81100000 0x60000>;
+ 			no-map;
+ 		};
+ 	};
+-- 
+2.53.0
+

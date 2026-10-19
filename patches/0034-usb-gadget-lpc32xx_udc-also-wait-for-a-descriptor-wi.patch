@@ -1,0 +1,57 @@
+From 3ed19c558f795bc4f2388f6f9b69748cbb60022e Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 18 Oct 2026 16:26:34 +0200
+Subject: [PATCH 34/37] usb: gadget: lpc32xx_udc: also wait for a descriptor
+ with no status yet
+
+On the PNX4008 the end of transfer interrupt can also come before the
+controller has written any status back to the DMA descriptor (status 0x0,
+not retired), not only while it is still being serviced. The driver then
+disabled DMA under the running transfer and the OUT endpoint never
+completed another request: g_ether stopped receiving until the cable was
+replugged. Treat every descriptor that has not retired yet the same way:
+leave DMA running and look again from the timer.
+
+Tested with kexec: 30 x 8 MB scp to the phone without errors.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index fca363a19..390e33d27 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -2009,14 +2009,14 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 	 */
+ 	for (i = 0; i < 20 && !(READ_ONCE(dd->dd_status) & DD_STATUS_DD_RETIRED); i++)
+ 		udelay(1);
+-	if (!(dd->dd_status & DD_STATUS_DD_RETIRED) &&
+-	    (dd->dd_status & DD_STATUS_STS_MASK) == DD_STATUS_STS_BS) {
++	if (!(dd->dd_status & DD_STATUS_DD_RETIRED)) {
+ 		/*
+ 		 * Seen on the PNX4008 with g_ether: end of transfer signalled while the
+ 		 * descriptor is still being serviced (status 0x5c00022: 1472 of a 1514-byte
+-		 * frame, the last short packet still to come). Disabling DMA here loses the
+-		 * transfer and stalls the endpoint for good, so leave it running and wait for
+-		 * the real end of transfer.
++		 * frame, the last short packet still to come), or before the controller has
++		 * written any status back (0x0). Disabling DMA here loses the transfer and
++		 * stalls the endpoint for good, so leave it running and wait for the real end
++		 * of transfer.
+ 		 */
+ 		if (ep->dd_waits < DD_MAX_WAITS) {
+ 			writel((1 << ep->hwep_num), USBD_EOTINTCLR(udc->udp_baseaddr));
+@@ -2028,7 +2028,7 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 			       dd->dd_status);
+ 			return;
+ 		}
+-		/* Still in service: give up this request below (EOT prior to completion). */
++		/* Still not retired: give up this request below. */
+ 	}
+ 	ep->dd_waits = 0;
+ 	del_timer(&ep->dd_timer);
+-- 
+2.53.0
+

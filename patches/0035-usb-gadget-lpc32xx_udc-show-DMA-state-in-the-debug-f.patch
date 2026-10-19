@@ -1,0 +1,75 @@
+From de8357fe3674c30cceea94c1df6f06c60a9d0623 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 18 Oct 2026 16:26:35 +0200
+Subject: [PATCH 35/37] usb: gadget: lpc32xx_udc: show DMA state in the debug
+ file
+
+The debug file was created as "driver/udc", which is not a valid debugfs
+name; create it as lpc32xx_udc. Add what is needed to diagnose a stalled
+endpoint: the endpoint and DMA interrupt, request, enable, end of transfer,
+new descriptor and system error registers, and per endpoint req_pending,
+dd_waits and the setup and status words of each queued request's DMA
+descriptor.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index 390e33d27..b38efea5f 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -472,7 +472,7 @@ static const char driver_name[] = "lpc32xx_udc";
+  */
+ #ifdef CONFIG_USB_GADGET_DEBUG_FILES
+ static char *epnames[] = {"INT", "ISO", "BULK", "CTRL"};
+-static const char debug_filename[] = "driver/udc";
++static const char debug_filename[] = "lpc32xx_udc";
+ 
+ static void proc_ep_show(struct seq_file *s, struct lpc32xx_ep *ep)
+ {
+@@ -484,6 +484,7 @@ static void proc_ep_show(struct seq_file *s, struct lpc32xx_ep *ep)
+ 			ep->is_in ? "in" : "out");
+ 	seq_printf(s, " type %4s", epnames[ep->eptype]);
+ 	seq_printf(s, " ints: %12d", ep->totalints);
++	seq_printf(s, " pending %d waits %u", ep->req_pending, ep->dd_waits);
+ 
+ 	if (list_empty(&ep->queue))
+ 		seq_printf(s, "\t(queue empty)\n");
+@@ -491,9 +492,14 @@ static void proc_ep_show(struct seq_file *s, struct lpc32xx_ep *ep)
+ 		list_for_each_entry(req, &ep->queue, queue) {
+ 			u32 length = req->req.actual;
+ 
+-			seq_printf(s, "\treq %p len %d/%d buf %p\n",
++			seq_printf(s, "\treq %p len %d/%d buf %p",
+ 				   &req->req, length,
+ 				   req->req.length, req->req.buf);
++			if (req->dd_desc_ptr)
++				seq_printf(s, " dd setup 0x%x status 0x%x",
++					   req->dd_desc_ptr->dd_setup,
++					   req->dd_desc_ptr->dd_status);
++			seq_printf(s, "\n");
+ 		}
+ 	}
+ }
+@@ -517,6 +523,16 @@ static int udc_show(struct seq_file *s, void *unused)
+ 		   udc->driver ? udc->driver->driver.name : "(none)");
+ 
+ 	if (udc->enabled && udc->vbus) {
++		void __iomem *b = udc->udp_baseaddr;
++
++		/* Per-endpoint bits: DMA request, enable, end of transfer, new DD, error */
++		seq_printf(s, "epint 0x%x/0x%x dmareq 0x%x dmaen 0x%x dmaint 0x%x/0x%x\n",
++			   readl(USBD_EPINTST(b)), readl(USBD_EPINTEN(b)),
++			   readl(USBD_DMARST(b)), readl(USBD_EPDMAST(b)),
++			   readl(USBD_DMAINTST(b)), readl(USBD_DMAINTEN(b)));
++		seq_printf(s, "eot 0x%x nddr 0x%x syserr 0x%x\n",
++			   readl(USBD_EOTINTST(b)), readl(USBD_NDDRTINTST(b)),
++			   readl(USBD_SYSERRTINTST(b)));
+ 		proc_ep_show(s, &udc->ep[0]);
+ 		list_for_each_entry(ep, &udc->gadget.ep_list, ep.ep_list)
+ 			proc_ep_show(s, ep);
+-- 
+2.53.0
+
