@@ -30,6 +30,8 @@
  * Stop p1ibat first (killall p1ibat): only one reader of UART3 works at a time.
  *
  *   p1imodem listen SECONDS                print every frame received
+ *   p1imodem sweep FROM TO HEX...          send the payload HEX (after the channel byte) to
+ *                                          every channel FROM..TO, 0.6 s of replies each
  *   p1imodem reset                         reset the modem (BB_RST# = GPO_07 low for
  *                                          100 ms): it restarts in AT mode, not CAIF
  *   p1imodem text "AT" [SECONDS]           plain text: send the line (+ CR) with the break
@@ -252,6 +254,24 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "listen")) {
 		receive(atof(argv[2]), 0);
+		return 0;
+	}
+	if (!strcmp(argv[1], "sweep") && argc >= 5) {
+		uint8_t payload[256];
+		int n, ch, from = strtol(argv[2], NULL, 0), to = strtol(argv[3], NULL, 0);
+
+		for (n = 0; n < argc - 4 && n + 1 < (int)sizeof(payload); n++)
+			payload[n + 1] = strtoul(argv[n + 4], NULL, 16);
+		lcr = u3[U16_LCR / 4];
+		for (ch = from; ch <= to; ch++) {
+			payload[0] = ch;
+			u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
+			receive(0.05, 0);
+			send_frame(payload, n + 1);
+			receive(0.05, 0);
+			u3[U16_LCR / 4] = lcr;
+			receive(0.6, 0);
+		}
 		return 0;
 	}
 	if (!strcmp(argv[1], "raw")) {
