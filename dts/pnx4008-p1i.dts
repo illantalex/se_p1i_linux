@@ -77,6 +77,18 @@
 		};
 
 		/*
+		 * Where Symbian leaves the audio DSP's modules (message 12 block at shared + 0x800:
+		 * DspCodecModule.bin at 0x81050000, DspSrcFilterCoefs.bin at 0x8109E000, up to
+		 * 0x810AA902). The DSP reads them by physical address whenever it is set up again,
+		 * e.g. the resampling filter tables on a sample rate change (message 49): if Linux
+		 * reuses this memory, 44.1 kHz-family rates turn into noise.
+		 */
+		dsp_symbian: dsp-symbian@81050000 {
+			reg = <0x81050000 0x5b000>;
+			no-map;
+		};
+
+		/*
 		 * Audio DSP modules (DspCodecModule.bin at +0, DspSrcFilterCoefs.bin at +0x4E000 as
 		 * in Symbian's layout), announced to the DSP with message 12; it reads them by
 		 * physical address. The shared buffer itself is in the internal SRAM (0x08000000).
@@ -393,6 +405,8 @@
 		audio-dsp@400c0000 {
 			compatible = "nxp,pnx4008-dsp-pcm";
 			reg = <0x400c0000 0x40>, <0x400e8064 0x4>, <0x08001000 0x7e0>;
+			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
+			memory-region = <&dsp_symbian>;
 		};
 
 		memstick@20080000 {
