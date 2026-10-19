@@ -1,0 +1,31 @@
+From 1d6a0e86b42aad0e26c7dcfb55e71e677a6a2be7 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 19 Oct 2026 22:13:28 +0200
+Subject: [PATCH 38/40] Input: lpc32xx_ts - allow on ARMv5 multiplatform
+
+The PNX4008 has the same touchscreen controller at 0x40048000 (verified on
+the Sony Ericsson P1i: FIFO samples in the LPC32xx format, pen detect on
+SIC1 6, FIFO interrupt SIC1 7), so let the driver build on ARCH_MULTI_V5
+without ARCH_LPC32XX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
+index dc90a3ea5..94efdd1f7 100644
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -559,7 +559,7 @@ config TOUCHSCREEN_WACOM_I2C
+ 
+ config TOUCHSCREEN_LPC32XX
+ 	tristate "LPC32XX touchscreen controller"
+-	depends on ARCH_LPC32XX
++	depends on ARCH_LPC32XX || ARCH_MULTI_V5
+ 	help
+ 	  Say Y here if you have a LPC32XX device and want
+ 	  to support the built-in touchscreen.
+-- 
+2.53.0
+

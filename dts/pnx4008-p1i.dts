@@ -434,6 +434,27 @@
 		};
 
 		/*
+		 * Resistive touchscreen controller (TOUCH1), LPC32xx layout. Symbian leaves it
+		 * running from the 32 kHz clock (ADCCLK_CTRL 0x400040B4 bit 0). Verified on the
+		 * device: touches fill the FIFO, SIC1 6 follows the pen (pen-detect), so the
+		 * FIFO interrupt is SIC1 7 as on LPC32xx.
+		 * X grows to the right, Y downwards (no swap). The range is the reported value
+		 * (driver output) measured at the corners of the 240x320 display: top left
+		 * 87/81, bottom right 931/970.
+		 */
+		touchscreen@40048000 {
+			compatible = "nxp,lpc3220-tsc";
+			reg = <0x40048000 0x1000>;
+			interrupt-parent = <&sic1>;
+			interrupts = <7 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal_32k>;
+			touchscreen-min-x = <87>;
+			touchscreen-size-x = <932>;
+			touchscreen-min-y = <81>;
+			touchscreen-size-y = <971>;
+		};
+
+		/*
 		 * Key scanner, LPC32xx layout (drivers/input/keyboard/lpc32xx-keys.c). Wiring
 		 * (sheet BCT1DA p6): KEY_COL[0..5] / KEY_ROW[0..5] on the scanner pins, KEY_ROW[6]
 		 * on GPIO_02 and KEY_COL[6] on GPI_08 -- the scanner still handles them: with a

@@ -1,7 +1,7 @@
 From dacdc27bae76d41a38fe27ec25a5cca67f36294e Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 14 Oct 2026 20:47:34 +0200
-Subject: [PATCH 15/37] Input: add jog dial driver (interrupt + direction
+Subject: [PATCH 15/40] Input: add jog dial driver (interrupt + direction
  lines)
 
 The Sony Ericsson P1i jog dial is a quadrature pair resting high; each

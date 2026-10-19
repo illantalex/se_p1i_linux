@@ -1,0 +1,40 @@
+From efd5cca22a6d35cb104cbbe91b5fee8d0d197dfe Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 19 Oct 2026 22:13:29 +0200
+Subject: [PATCH 39/40] Input: lpc32xx_ts - honour the common touchscreen
+ properties
+
+The driver always reports the full 10-bit range, while a panel uses only
+part of it. Parse the generic touchscreen properties (touchscreen-min-x,
+touchscreen-size-x, ...) so the device tree can give the usable range and
+user space scales positions to the display without extra calibration.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/lpc32xx_ts.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/input/touchscreen/lpc32xx_ts.c b/drivers/input/touchscreen/lpc32xx_ts.c
+index 15b5cb763..5330aee09 100644
+--- a/drivers/input/touchscreen/lpc32xx_ts.c
++++ b/drivers/input/touchscreen/lpc32xx_ts.c
+@@ -7,6 +7,7 @@
+ 
+ #include <linux/platform_device.h>
+ #include <linux/input.h>
++#include <linux/input/touchscreen.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
+ #include <linux/clk.h>
+@@ -264,6 +265,8 @@ static int lpc32xx_ts_probe(struct platform_device *pdev)
+ 			     LPC32XX_TSC_MAX_XY_VAL, 0, 0);
+ 	input_set_abs_params(input, ABS_Y, LPC32XX_TSC_MIN_XY_VAL,
+ 			     LPC32XX_TSC_MAX_XY_VAL, 0, 0);
++	/* The panel's usable range, e.g. touchscreen-min-x / touchscreen-size-x */
++	touchscreen_parse_properties(input, false, NULL);
+ 
+ 	input_set_drvdata(input, tsc);
+ 
+-- 
+2.53.0
+
