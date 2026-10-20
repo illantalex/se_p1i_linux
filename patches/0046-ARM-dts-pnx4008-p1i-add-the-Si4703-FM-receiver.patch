@@ -1,0 +1,62 @@
+From 35f4be9f83c2d7fc6092a82b4152a8b2d19d549f Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 20 Oct 2026 21:48:45 +0200
+Subject: [PATCH 46/46] ARM: dts: pnx4008-p1i: add the Si4703 FM receiver
+
+On I2C2 at 0x10: reset FM_RST# from the STMPE801, interrupt FM_IRQ on
+GPI_03 (SIC2 25), supply VADC_FM_2.8 switched by ADC_FM_POW (GPO_03, held
+on by a hog). The 32 kHz RCLK comes from the modem (MS_RTCCLK). The audio
+goes to the codec input, from where the DSP routes it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 323352470..1a45a476d 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -342,6 +342,21 @@ stmpe_gpio: gpio {
+ 							  "IR_SHDN#";
+ 				};
+ 			};
++
++			/*
++			 * Si4703 FM receiver (N5503, audio sheet BCT1E0): reset FM_RST# from the
++			 * STMPE801 (high = running), GPIO2 interrupt FM_IRQ on GPI_03 (SIC2 25 in
++			 * the PNX4008 interrupt map), 32 kHz RCLK FM_32kHz, supply VADC_FM_2.8
++			 * switched by ADC_FM_POW (GPO_03, hogged in the gpio node). Its audio
++			 * goes to the codec input AUDIO_IN1, from where the DSP routes it.
++			 */
++			fm-radio@10 {
++				compatible = "silabs,si470x";
++				reg = <0x10>;
++				interrupt-parent = <&sic2>;
++				interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
++				reset-gpios = <&stmpe_gpio 4 GPIO_ACTIVE_HIGH>;
++			};
+ 		};
+ 
+ 		/*
+@@ -446,6 +461,17 @@ qwerty-backlight-en-hog {
+ 				output-high;
+ 				line-name = "QWERTY_BACKLIGHT_EN";
+ 			};
++
++			/*
++			 * VADC_FM_2.8 (FM receiver and codec input supply), see fm-radio@10; the
++			 * radio driver has no supply handling, so it stays on.
++			 */
++			adc-fm-pow-hog {
++				gpio-hog;
++				gpios = <5 3 GPIO_ACTIVE_HIGH>;
++				output-high;
++				line-name = "ADC_FM_POW";
++			};
+ 		};
+ 
+ 		/*
+-- 
+2.53.0
+

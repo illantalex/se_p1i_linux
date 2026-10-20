@@ -1,7 +1,7 @@
 From c7576df7bf572a98adfc680a9f4eb2434ed36543 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sat, 17 Oct 2026 23:03:42 +0200
-Subject: [PATCH 30/43] usb: gadget: lpc32xx_udc: ignore an end of transfer
+Subject: [PATCH 30/46] usb: gadget: lpc32xx_udc: ignore an end of transfer
  while the DD is in service
 
 On the PNX4008 (Sony Ericsson P1i, g_ether) the end-of-transfer interrupt

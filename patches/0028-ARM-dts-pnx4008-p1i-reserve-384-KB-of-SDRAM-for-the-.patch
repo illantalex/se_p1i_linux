@@ -1,7 +1,7 @@
 From c83b96f05e963cd1de00a013df3b6fc5d00e2dbd Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sat, 17 Oct 2026 19:20:04 +0200
-Subject: [PATCH 28/43] ARM: dts: pnx4008-p1i: reserve 384 KB of SDRAM for the
+Subject: [PATCH 28/46] ARM: dts: pnx4008-p1i: reserve 384 KB of SDRAM for the
  audio DSP's modules
 
 The DSP's codec module (316608 bytes) and SRC filter coefficients (51458

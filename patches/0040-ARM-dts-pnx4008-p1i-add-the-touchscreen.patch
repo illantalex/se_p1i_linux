@@ -1,7 +1,7 @@
 From a64a994470fb77fca35e692d979587f0d4a3fbdd Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 22:13:30 +0200
-Subject: [PATCH 40/43] ARM: dts: pnx4008-p1i: add the touchscreen
+Subject: [PATCH 40/46] ARM: dts: pnx4008-p1i: add the touchscreen
 
 The SoC's resistive touchscreen controller (LPC32xx layout) on SIC1 7,
 clocked from the 32 kHz oscillator, with the panel range measured at the

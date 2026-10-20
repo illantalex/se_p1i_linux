@@ -1,7 +1,7 @@
 From cb348b9b9ec3b7bb8fe939f8f248cb58dcc0703c Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 18:48:30 +0200
-Subject: [PATCH 20/43] memstick: add NXP PNX4008 Memory Stick host driver
+Subject: [PATCH 20/46] memstick: add NXP PNX4008 Memory Stick host driver
 
 The PNX4008 Memory Stick host at 0x20080000 is the Sony MS host core
 also used by the TI FlashMedia readers (tifm_ms): COMMAND, DATA, STATUS

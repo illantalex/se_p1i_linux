@@ -1,7 +1,7 @@
 From bcd268d8a91318d4353452fc1a50f52db5d606c5 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 22:59:14 +0200
-Subject: [PATCH 27/43] clk: nxp: pnx4008-usb: keep the PLL and device clock
+Subject: [PATCH 27/46] clk: nxp: pnx4008-usb: keep the PLL and device clock
  running
 
 On the PNX4008 an access to the USB device controller while its clock is

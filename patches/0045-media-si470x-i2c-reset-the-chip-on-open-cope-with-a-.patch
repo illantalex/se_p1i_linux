@@ -1,0 +1,84 @@
+From 70d0ed4a175131031a8cc3782c6adcc20113331d Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 20 Oct 2026 21:48:45 +0200
+Subject: [PATCH 45/46] media: si470x-i2c: reset the chip on open, cope with a
+ slow reset line
+
+On the Sony Ericsson P1i the reset line sits on an STMPE801 I2C GPIO
+expander, so use the sleeping gpiod calls. After a powerdown the chip did
+not tune again until it was reset, so pulse the reset line on the first
+open (and at probe), then do a throwaway read (after a reset held for a
+while the first transfer is not acknowledged) and reload the register
+cache, since every write sends all writable registers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/radio/si470x/radio-si470x-i2c.c | 31 +++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/radio/si470x/radio-si470x-i2c.c b/drivers/media/radio/si470x/radio-si470x-i2c.c
+index a6ad926c2..56d5238a8 100644
+--- a/drivers/media/radio/si470x/radio-si470x-i2c.c
++++ b/drivers/media/radio/si470x/radio-si470x-i2c.c
+@@ -163,6 +163,30 @@ static int si470x_get_all_registers(struct si470x_device *radio)
+  * File Operations Interface
+  **************************************************************************/
+ 
++/*
++ * si470x_reset - reset pulse
++ *
++ * After a powerdown the chip does not tune again (seen on the Sony Ericsson
++ * P1i): a reset brings it back. After a reset held for some time (more than
++ * ~0.2 s there) the first transfer is not acknowledged, the next ones are;
++ * so a throwaway read goes first. Then the register cache is reloaded:
++ * every write sends registers 0x02-0x09, and TEST1 etc. as cached from the
++ * running chip keep it from powering up after a reset.
++ */
++static void si470x_reset(struct si470x_device *radio)
++{
++	u8 buf[2];
++
++	/* The reset line may sit on an I2C GPIO expander (can sleep) */
++	gpiod_set_value_cansleep(radio->gpio_reset, 0);
++	usleep_range(1000, 2000);	/* reset low >= 100 us */
++	gpiod_set_value_cansleep(radio->gpio_reset, 1);
++	usleep_range(5000, 10000);
++	i2c_master_recv(radio->client, buf, sizeof(buf));
++	si470x_get_all_registers(radio);
++}
++
++
+ /*
+  * si470x_fops_open - file open
+  */
+@@ -175,6 +199,9 @@ static int si470x_fops_open(struct file *file)
+ 		return retval;
+ 
+ 	if (v4l2_fh_is_singular_file(file)) {
++		if (radio->gpio_reset)
++			si470x_reset(radio);
++
+ 		/* start radio */
+ 		retval = si470x_start(radio);
+ 		if (retval < 0)
+@@ -390,7 +417,7 @@ static int si470x_i2c_probe(struct i2c_client *client)
+ 	}
+ 
+ 	if (radio->gpio_reset)
+-		gpiod_set_value(radio->gpio_reset, 1);
++		si470x_reset(radio);
+ 
+ 	/* power up : need 110ms */
+ 	radio->registers[POWERCFG] = POWERCFG_ENABLE;
+@@ -468,7 +495,7 @@ static void si470x_i2c_remove(struct i2c_client *client)
+ 	video_unregister_device(&radio->videodev);
+ 
+ 	if (radio->gpio_reset)
+-		gpiod_set_value(radio->gpio_reset, 0);
++		gpiod_set_value_cansleep(radio->gpio_reset, 0);
+ 
+ 	v4l2_ctrl_handler_free(&radio->hdl);
+ 	v4l2_device_unregister(&radio->v4l2_dev);
+-- 
+2.53.0
+

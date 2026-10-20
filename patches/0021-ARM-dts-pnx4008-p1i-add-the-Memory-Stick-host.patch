@@ -1,7 +1,7 @@
 From 6b7f4743f0440479d7193a6398774515c63fb6bc Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 18:48:30 +0200
-Subject: [PATCH 21/43] ARM: dts: pnx4008-p1i: add the Memory Stick host
+Subject: [PATCH 21/46] ARM: dts: pnx4008-p1i: add the Memory Stick host
 
 Map the AHB peripheral window (0x20000000) on the soc bus, add the
 208 MHz HCLK PLL the card clock is divided from, and describe the host

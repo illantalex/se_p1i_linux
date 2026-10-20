@@ -342,6 +342,21 @@
 							  "IR_SHDN#";
 				};
 			};
+
+			/*
+			 * Si4703 FM receiver (N5503, audio sheet BCT1E0): reset FM_RST# from the
+			 * STMPE801 (high = running), GPIO2 interrupt FM_IRQ on GPI_03 (SIC2 25 in
+			 * the PNX4008 interrupt map), 32 kHz RCLK FM_32kHz, supply VADC_FM_2.8
+			 * switched by ADC_FM_POW (GPO_03, hogged in the gpio node). Its audio
+			 * goes to the codec input AUDIO_IN1, from where the DSP routes it.
+			 */
+			fm-radio@10 {
+				compatible = "silabs,si470x";
+				reg = <0x10>;
+				interrupt-parent = <&sic2>;
+				interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+				reset-gpios = <&stmpe_gpio 4 GPIO_ACTIVE_HIGH>;
+			};
 		};
 
 		/*
@@ -445,6 +460,17 @@
 				gpios = <5 10 GPIO_ACTIVE_HIGH>;
 				output-high;
 				line-name = "QWERTY_BACKLIGHT_EN";
+			};
+
+			/*
+			 * VADC_FM_2.8 (FM receiver and codec input supply), see fm-radio@10; the
+			 * radio driver has no supply handling, so it stays on.
+			 */
+			adc-fm-pow-hog {
+				gpio-hog;
+				gpios = <5 3 GPIO_ACTIVE_HIGH>;
+				output-high;
+				line-name = "ADC_FM_POW";
 			};
 		};
 
