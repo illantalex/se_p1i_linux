@@ -1,7 +1,7 @@
 From d1bd6a00ab4307c53d1e330a095f0b030f10d2ef Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 18 Oct 2026 10:02:24 +0200
-Subject: [PATCH 33/46] usb: gadget: lpc32xx_udc: re-check a descriptor whose
+Subject: [PATCH 33/48] usb: gadget: lpc32xx_udc: re-check a descriptor whose
  end of transfer came early
 
 Ignoring an end of transfer that arrives while the descriptor is still in

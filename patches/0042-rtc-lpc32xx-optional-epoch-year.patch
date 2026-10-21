@@ -1,7 +1,7 @@
 From 4d0e0214261caf45c1c0091ebbd014357c2c2d00 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 22:38:27 +0200
-Subject: [PATCH 42/46] rtc: lpc32xx: optional epoch year
+Subject: [PATCH 42/48] rtc: lpc32xx: optional epoch year
 
 When the RTC is shared with another OS that counts seconds from a different
 epoch (Symbian on the Sony Ericsson P1i counts from 2000-01-01), the counter

@@ -1,0 +1,33 @@
+From 7c61e5bcc5664dcea5c061ae477638a4211cefae Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 21 Oct 2026 21:22:10 +0200
+Subject: [PATCH 48/48] ARM: dts: pnx4008-p1i: map the DSP's FEV for the Audio
+ Source control
+
+The Function Enable Vector at shared buffer + 0x810 (internal SRAM), six
+halfwords; the driver changes its source halfword to switch between ALSA
+playback and the FM receiver.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 1a45a476d..27d3a21a0 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -419,7 +419,9 @@ usb_transceiver: usb-transceiver@2c {
+ 		 */
+ 		audio-dsp@400c0000 {
+ 			compatible = "nxp,pnx4008-dsp-pcm";
+-			reg = <0x400c0000 0x40>, <0x400e8064 0x4>, <0x08001000 0x7e0>;
++			/* APBP, DSPCLKCTRL, the PCM halves and the FEV in the shared buffer */
++			reg = <0x400c0000 0x40>, <0x400e8064 0x4>, <0x08001000 0x7e0>,
++			      <0x08000810 0xc>;
+ 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
+ 			memory-region = <&dsp_symbian>;
+ 		};
+-- 
+2.53.0
+

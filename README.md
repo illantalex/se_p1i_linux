@@ -17,13 +17,16 @@ here. No reflashing; `reboot` returns to Symbian.
 | Backlights | display (PWM, 8 levels) and keypad; camera-flash LED as a torch (STCF03) |
 | Core | interrupts (MIC/SIC1/SIC2), tickless MSTIM clocksource/clockevent, watchdog reboot |
 | Buses | I2C1/I2C2, SoC GPIO, STMPE801 GPIO expander |
-| FM radio | Si4703 reachable on I2C; plays if Symbian's FM app set up the audio path before the handover |
+| Sound | ALSA playback, 8-48 kHz stereo, through the audio DSP on a stream Symbian started (headphones; see the handover's README) |
+| FM radio | Si4703 tuner (`/dev/radio0`, `fm.sh`); audio after a handover with Symbian's FM radio playing, switchable with ALSA playback (below) |
+| Touchscreen | `lpc32xx_ts` (`/dev/input/event1`) |
+| RTC | the SoC RTC Symbian keeps running (UTC), set from NTP |
 | Memory Stick | Memory Stick Micro slot read/write (`/dev/mspblk0p1`, FAT), 4-bit mode: reads 4.2 MB/s, writes ~1.6 MB/s; polling |
 | Debian | trixie armel (sysvinit) from the Memory Stick's Linux partition, root shells on the display and serial console; ~12 MB RAM used at idle |
 | USB | device mode on the Fast-Port connector: Ethernet gadget (CDC ECM, 12 Mbit/s), phone 192.168.7.2; `pc-usbnet.sh` on the PC shares its internet connection |
 | Serial | 8250 console on UART6 (optional, needs soldering), UART5 |
 
-Not yet: fast or interrupt-driven Memory Stick access, USB host, audio codec, camera, Wi-Fi, touchscreen, the GSM
+Not yet: fast or interrupt-driven Memory Stick access, USB host, recording, camera, Wi-Fi, the GSM
 baseband, and power management. The kernel does not initialise the display controller or the
 panel itself, so it relies on starting from Symbian.
 
@@ -31,7 +34,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 27 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 48 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
@@ -101,6 +104,21 @@ When changing the kernel, commit in `linux/` and refresh the series:
 ```sh
 rm patches/*.patch && git -C linux format-patch -o ../patches v6.1.2..p1i
 ```
+
+## FM radio
+
+The headset cable is the antenna and shares the Fast-Port with USB, so use the serial
+console. The FM receiver's audio goes through the codec's line input and the audio DSP, and
+only Symbian's FM radio sets that path up completely:
+
+1. create `D:\other\nostream.txt` on the card (the handover then leaves the DSP as it is),
+2. start the FM radio in Symbian with the headphones in, and hand over,
+3. `/root/fm.sh on 99.3` (`seek`, `tune MHz`, `info`, `off`).
+
+The ALSA control `Audio Source` switches the DSP's music path between the radio and ALSA
+playback, as often as needed: `amixer -c 0 sset 'Audio Source' PCM` before playing, `FM` to
+go back. Playback is refused while `FM` is selected. After a normal handover (no
+`nostream.txt`), ALSA works but the radio stays silent.
 
 ## Debian on the Memory Stick
 

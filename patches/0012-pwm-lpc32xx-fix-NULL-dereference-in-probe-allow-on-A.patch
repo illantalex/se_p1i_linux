@@ -1,7 +1,7 @@
 From 3692b2de07c518231b698a0e056d0e506d6e2438 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 20:27:16 +0200
-Subject: [PATCH 12/46] pwm: lpc32xx: fix NULL dereference in probe, allow on
+Subject: [PATCH 12/48] pwm: lpc32xx: fix NULL dereference in probe, allow on
  ARMv5 multiplatform
 
 The probe reads chip.pwms[0].hwpwm to clear PWM_PIN_LEVEL, but chip.pwms

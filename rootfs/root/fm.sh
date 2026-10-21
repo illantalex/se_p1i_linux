@@ -5,7 +5,8 @@
 #
 # The driver powers the chip only while /dev/radio0 is open, so "on" keeps it open with a
 # background holder; "off" ends it. This tunes the receiver only: its audio reaches the
-# headphones through the codec input and the DSP (see fmaudio.sh).
+# headphones through the codec's line input and the DSP, set up by Symbian's FM radio before
+# the handover (D:\other\nostream.txt); ALSA control "Audio Source" = FM selects it.
 D=/dev/radio0
 PID=/run/fm-holder.pid
 info() {

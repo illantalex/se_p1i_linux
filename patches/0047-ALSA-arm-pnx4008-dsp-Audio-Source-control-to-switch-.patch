@@ -1,0 +1,275 @@
+From 94695a7e61bd5d67953791b8e58f6a17b5cb4ec6 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 21 Oct 2026 21:22:09 +0200
+Subject: [PATCH 47/48] ALSA: arm: pnx4008-dsp: "Audio Source" control to
+ switch between PCM and FM
+
+The DSP firmware (Teak code, disassembled with teakra) has three stream
+slots and two paths. Message 7 sets the source type of the slots (8 = ARM
+PCM, 4 = the codec's line input), message 8 connects slots to the paths
+(p0 low byte: the music path to the headphones and speaker; high byte: a
+second path, probably the voice chain). Slot 1 is the PCM stream this
+driver feeds (it raises semaphore 2). Symbian's FM radio puts slot 2, the
+FM receiver on the line input, on the music path instead.
+
+After a handover with the FM radio playing in Symbian (no silent stream),
+the new control switches the music path between the two:
+ - PCM: slot 1 to 44.1 kHz stereo (messages 46/49) before connecting it,
+   since connecting copies the slot's format into the path and the radio
+   leaves 8 kHz mono there; slot 1 = PCM, slot 2 = line in (7 0x0408);
+   slot 1 on the music path, slot 2 on the second one (8 0x0201: with the
+   second path empty the DSP never asks for PCM); FEV source halfword
+   0x0900; semaphore 2 unmasked.
+ - FM: the radio's settings back (46 0x100, 49 0x188, line in captured at
+   48 kHz with 80), slot 2 on the music path (8 2), FEV source 0x0800,
+   semaphore 2 masked.
+Only the FEV's source halfword changes; the route (halfwords 2-5) stays.
+The FEV is mapped with an optional fourth reg. Playback is refused while
+FM is selected, and the control cannot change while a playback is open.
+The control starts at FM when the handover left no PCM stream.
+
+The stream's rate is unknown at probe now (Symbian's radio, or a silent
+stream at another rate), so the first playback always sets it.
+
+On a handover with the silent stream, FM stays silent: Symbian's radio
+sets up more than these messages (likely in the codec).
+
+Tested: FM -> PCM -> FM several times without a new handover; clean
+44.1 kHz music and the radio back each time.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 143 ++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 137 insertions(+), 6 deletions(-)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 936000c61..2a5faca65 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -13,7 +13,7 @@
+  * through Symbian's audio stream API and hands over with the stream running. This driver
+  * adopts that stream, Symbian's "area 0":
+  *
+- *  - 16-bit little-endian, stereo, 44.1 kHz as Symbian leaves it;
++ *  - 16-bit little-endian, stereo, 44.1 kHz (or 48 kHz) as Symbian leaves it;
+  *  - two 1008-byte halves (252 frames each) at shared buffer + 0x1000 (internal SRAM);
+  *  - the DSP raises its semaphore 2 whenever it has taken a half; the ARM fills the next
+  *    half and sets PSEM bit 2 (with the DSP clock request held, as Symbian's dspextension
+@@ -29,6 +29,15 @@
+  *
+  * The semaphores are polled with an hrtimer while the stream plays (their interrupt is not
+  * used yet). Without a stream from Symbian (PMASK bit 2 masked) playback stays silent.
++ *
++ * The DSP firmware has three stream slots (message 7 sets their source type: 8 = ARM PCM,
++ * 4 = the codec's line input) and two paths (message 8 connects slots to them: the low byte
++ * of p0 is the music path to the headphones and speaker, the high byte a second one,
++ * probably the voice chain). Slot 1 is the PCM stream above; Symbian's FM radio puts slot
++ * 2, line in from the FM receiver, on the music path. After a handover with the FM radio
++ * playing, the "Audio Source" control switches the music path between the two: "PCM" for
++ * ALSA playback, "FM" for the radio (tuned with the si470x driver). On a handover with the
++ * silent stream, "FM" is silent: Symbian's radio sets up more than these messages.
+  */
+ 
+ #include <linux/delay.h>
+@@ -41,6 +50,7 @@
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/spinlock.h>
++#include <sound/control.h>
+ #include <sound/core.h>
+ #include <sound/initval.h>
+ #include <sound/pcm.h>
+@@ -60,6 +70,10 @@
+ #define PSTS_REP_ALL	(BIT(10) | BIT(11) | BIT(12))
+ #define PSTS_CMD0	BIT(13)
+ 
++#define MSG_FEV		6	/* Function Enable Vector: halfwords, shared offset */
++#define MSG_SLOT_TYPE	7	/* source type of slots 1, 2 (p0 bytes), 3 */
++#define MSG_SLOT_PATH	8	/* slot on path A (p0 low byte) and path B (high byte) */
++#define MSG_LINE_IN	80	/* start capturing the line-in slot: rate index, 1 */
+ #define MSG_STREAM_RATE	46	/* area offset, rate index */
+ #define MSG_SRC_TABLE	49	/* resampling filter table, 0 */
+ #define STREAM_AREA	0x1000	/* shared buffer offset of area 0 */
+@@ -73,8 +87,11 @@
+ #define DSPCLKCTRL_REQ	BIT(9)	/* DSP clock request, held while setting PSEM */
+ 
+ #define STREAM_SEM	BIT(2)	/* area 0 semaphore, both directions */
++#define FEV_WORDS	6	/* the FEV at shared buffer + 0x810 */
++#define FEV_SHARED_OFF	0x810
++#define FEV_SRC_PCM	0x0900	/* halfword 1: ARM_PCM1 (0x0100) + Suzi ADC line in */
++#define FEV_SRC_LINE_IN	0x0800	/* halfword 1: Suzi ADC line in */
+ #define HALF_BYTES	1008
+-#define RATE		44100	/* as Symbian leaves the stream */
+ #define POLL_NS		(1 * NSEC_PER_MSEC)
+ /*
+  * Up to 512 periods (2.9 s): reading from the Memory Stick (polled) or resampling can keep
+@@ -107,8 +124,12 @@ struct pnx4008_dsp {
+ 	bool running;
+ 	struct mutex msg_lock;		/* command/reply registers */
+ 	unsigned int rate;		/* the stream's input rate on the DSP */
++	void __iomem *fev;		/* FEV in the shared buffer, NULL if not mapped */
++	unsigned int source;		/* SOURCE_PCM or SOURCE_FM */
+ };
+ 
++enum { SOURCE_PCM, SOURCE_FM };
++
+ static u16 apbp_rd(struct pnx4008_dsp *dsp, unsigned int reg)
+ {
+ 	return readw(dsp->apbp + reg);
+@@ -322,6 +343,10 @@ static int pnx4008_dsp_prepare(struct snd_pcm_substream *substream)
+ {
+ 	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
+ 
++	if (READ_ONCE(dsp->source) != SOURCE_PCM) {
++		dev_warn(dsp->dev, "Audio Source is FM: set it to PCM to play\n");
++		return -EBUSY;
++	}
+ 	dsp->pos = 0;
+ 	return pnx4008_dsp_set_rate(dsp, substream->runtime->rate);
+ }
+@@ -370,6 +395,94 @@ static snd_pcm_uframes_t pnx4008_dsp_pointer(struct snd_pcm_substream *substream
+ 	return bytes_to_frames(substream->runtime, READ_ONCE(dsp->pos));
+ }
+ 
++/* Message 6 with the FEV's source halfword replaced, the route (halfwords 2-5) kept. */
++static int pnx4008_dsp_fev_source(struct pnx4008_dsp *dsp, u16 src)
++{
++	writew(src, dsp->fev + 2);
++	return pnx4008_dsp_msg(dsp, MSG_FEV, FEV_WORDS, FEV_SHARED_OFF);
++}
++
++/*
++ * Put slot 1 (ARM PCM) or slot 2 (line in) on the music path, as found on the phone after a
++ * handover with Symbian's FM radio playing. PCM: slot 1 = PCM, slot 2 = line in; PCM only
++ * gets the DSP's requests with slot 2 on path B. Connecting a slot copies its format into
++ * the path (stereo, not the 8 kHz mono that Symbian's radio leaves in slot 1), so slot 1
++ * gets its rate first; later rate changes take effect while connected. FM: slot 1 back to
++ * 8 kHz mono (46 0x100) as Symbian's radio has it, line in captured at 48 kHz (80).
++ */
++static int pnx4008_dsp_set_source(struct pnx4008_dsp *dsp, unsigned int source)
++{
++	int ret;
++
++	dsp->rate = 0;
++	if (source == SOURCE_PCM) {
++		ret = pnx4008_dsp_set_rate(dsp, 44100);
++		if (!ret)
++			ret = pnx4008_dsp_msg(dsp, MSG_SLOT_TYPE, 0x0408, 0);
++		if (!ret)
++			ret = pnx4008_dsp_msg(dsp, MSG_SLOT_PATH, 0x0201, 0);
++		if (!ret)
++			ret = pnx4008_dsp_fev_source(dsp, FEV_SRC_PCM);
++		if (!ret)
++			apbp_wr(dsp, APBP_PMASK, apbp_rd(dsp, APBP_PMASK) & ~STREAM_SEM);
++	} else {
++		ret = pnx4008_dsp_msg(dsp, MSG_STREAM_RATE, STREAM_AREA, 0x100);
++		if (!ret)
++			ret = pnx4008_dsp_msg(dsp, MSG_SRC_TABLE, 0x108 + 16 * 8, 0);
++		if (!ret)
++			ret = pnx4008_dsp_msg(dsp, MSG_LINE_IN, 8, 1);
++		if (!ret)
++			ret = pnx4008_dsp_msg(dsp, MSG_SLOT_PATH, 0x0002, 0);
++		if (!ret)
++			ret = pnx4008_dsp_fev_source(dsp, FEV_SRC_LINE_IN);
++		if (!ret)
++			apbp_wr(dsp, APBP_PMASK, apbp_rd(dsp, APBP_PMASK) | STREAM_SEM);
++	}
++	return ret;
++}
++
++static int pnx4008_dsp_source_info(struct snd_kcontrol *kctl, struct snd_ctl_elem_info *uinfo)
++{
++	static const char *const names[] = { "PCM", "FM" };
++
++	return snd_ctl_enum_info(uinfo, 1, ARRAY_SIZE(names), names);
++}
++
++static int pnx4008_dsp_source_get(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++
++	uctl->value.enumerated.item[0] = READ_ONCE(dsp->source);
++	return 0;
++}
++
++static int pnx4008_dsp_source_put(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++	unsigned int source = uctl->value.enumerated.item[0];
++	int ret;
++
++	if (source > SOURCE_FM)
++		return -EINVAL;
++	if (source == READ_ONCE(dsp->source))
++		return 0;
++	if (dsp->substream)
++		return -EBUSY;		/* playback open: its stream would stop */
++	ret = pnx4008_dsp_set_source(dsp, source);
++	if (ret)
++		return ret;
++	WRITE_ONCE(dsp->source, source);
++	return 1;
++}
++
++static const struct snd_kcontrol_new pnx4008_dsp_source_ctl = {
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	.name = "Audio Source",
++	.info = pnx4008_dsp_source_info,
++	.get = pnx4008_dsp_source_get,
++	.put = pnx4008_dsp_source_put,
++};
++
+ static const struct snd_pcm_ops pnx4008_dsp_ops = {
+ 	.open = pnx4008_dsp_open,
+ 	.close = pnx4008_dsp_close,
+@@ -395,7 +508,11 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	dsp->card = card;
+ 	spin_lock_init(&dsp->lock);
+ 	mutex_init(&dsp->msg_lock);
+-	dsp->rate = RATE;
++	/*
++	 * Unknown: the handover leaves the stream at 44.1 kHz, or 48 kHz as Symbian's FM radio
++	 * runs it, so the first playback always sets the rate.
++	 */
++	dsp->rate = 0;
+ 	hrtimer_init(&dsp->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 	dsp->timer.function = pnx4008_dsp_poll;
+ 
+@@ -409,10 +526,18 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	if (IS_ERR(dsp->area))
+ 		return PTR_ERR(dsp->area);
+ 
+-	if (apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)
+-		dev_warn(dev, "no audio stream left by Symbian (PMASK %04x): playback will be silent\n",
++	/* Optional: the FEV, for the "Audio Source" control */
++	if (platform_get_resource(pdev, IORESOURCE_MEM, 3)) {
++		dsp->fev = devm_platform_ioremap_resource(pdev, 3);
++		if (IS_ERR(dsp->fev))
++			return PTR_ERR(dsp->fev);
++	}
++
++	if (apbp_rd(dsp, APBP_PMASK) & STREAM_SEM) {
++		dev_info(dev, "no PCM stream left by Symbian (PMASK %04x): Audio Source FM\n",
+ 			 apbp_rd(dsp, APBP_PMASK));
+-	else
++		dsp->source = SOURCE_FM;
++	} else
+ 		dev_info(dev, "adopting Symbian's audio stream (PMASK %04x, SEM %04x)\n",
+ 			 apbp_rd(dsp, APBP_PMASK), apbp_rd(dsp, APBP_SEM));
+ 	/*
+@@ -435,6 +560,12 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pnx4008_dsp_ops);
+ 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
+ 
++	if (dsp->fev) {
++		ret = snd_ctl_add(card, snd_ctl_new1(&pnx4008_dsp_source_ctl, dsp));
++		if (ret)
++			return ret;
++	}
++
+ 	return snd_card_register(card);
+ }
+ 
+-- 
+2.53.0
+

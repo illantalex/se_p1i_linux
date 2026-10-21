@@ -1,7 +1,7 @@
 From a0aa5fc351f821c03553e91055cc7d4eafbfb3e0 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 14 Oct 2026 20:47:33 +0200
-Subject: [PATCH 14/46] Input: lpc32xx-keys - allow on ARMv5 multiplatform
+Subject: [PATCH 14/48] Input: lpc32xx-keys - allow on ARMv5 multiplatform
 
 The PNX4008 has the same key scanner at 0x40050000 (verified on the Sony
 Ericsson P1i, interrupt SIC1 22), so let the driver build on

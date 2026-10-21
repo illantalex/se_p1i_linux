@@ -1,7 +1,7 @@
 From 58f80519052798959238f07d6a945682fd5fa035 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 18 Oct 2026 22:22:25 +0200
-Subject: [PATCH 36/46] ALSA: arm: pnx4008-dsp: allow buffers of up to 512
+Subject: [PATCH 36/48] ALSA: arm: pnx4008-dsp: allow buffers of up to 512
  periods (2.9 s)
 
 Reading from the Memory Stick (polled) or resampling can keep a player from
