@@ -34,7 +34,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 48 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 49 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |
@@ -118,7 +118,7 @@ only Symbian's FM radio sets that path up completely:
 The ALSA control `Audio Source` switches the DSP's music path between the radio and ALSA
 playback, as often as needed: `amixer -c 0 sset 'Audio Source' PCM` before playing, `FM` to
 go back. Playback is refused while `FM` is selected. After a normal handover (no
-`nostream.txt`), ALSA works but the radio stays silent.
+`nostream.txt`), ALSA works, the radio stays silent and the control does not exist.
 
 ## Debian on the Memory Stick
 

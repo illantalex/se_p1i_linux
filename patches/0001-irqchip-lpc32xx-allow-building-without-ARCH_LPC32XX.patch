@@ -1,7 +1,7 @@
 From 3e6ca3e4f8e1100e4e78035c3b40c90d423653e2 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 12 Oct 2026 23:40:30 +0200
-Subject: [PATCH 01/48] irqchip: lpc32xx: allow building without ARCH_LPC32XX
+Subject: [PATCH 01/49] irqchip: lpc32xx: allow building without ARCH_LPC32XX
 
 The PNX4008 (LPC32xx predecessor) has the same MIC/SIC interrupt
 controllers, but a PNX4008 board cannot enable ARCH_LPC32XX: the

@@ -1,7 +1,7 @@
 From fb14c3166718903a74ba24bbb28d71b22275418b Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 20 Oct 2026 21:48:44 +0200
-Subject: [PATCH 44/48] media: si470x: wait for the power up and keep the
+Subject: [PATCH 44/49] media: si470x: wait for the power up and keep the
  self-set registers
 
 si470x_start() wrote the configuration right after setting ENABLE, but the

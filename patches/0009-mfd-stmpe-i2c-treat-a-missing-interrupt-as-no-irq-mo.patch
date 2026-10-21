@@ -1,7 +1,7 @@
 From d87c47c12a42ca354f7765b99f89881894ceb999 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 19:32:39 +0200
-Subject: [PATCH 09/48] mfd: stmpe-i2c: treat a missing interrupt as no-irq
+Subject: [PATCH 09/49] mfd: stmpe-i2c: treat a missing interrupt as no-irq
  mode
 
 The I2C core reports a client without an interrupt as irq 0, but the

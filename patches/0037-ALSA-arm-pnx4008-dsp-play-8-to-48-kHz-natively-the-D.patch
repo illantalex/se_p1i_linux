@@ -1,7 +1,7 @@
 From f4447c6b9a98ec52a53c5acd2f0b0df6f0cddfda Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 19:27:28 +0200
-Subject: [PATCH 37/48] ALSA: arm: pnx4008-dsp: play 8 to 48 kHz natively, the
+Subject: [PATCH 37/49] ALSA: arm: pnx4008-dsp: play 8 to 48 kHz natively, the
  DSP resamples
 
 As Symbian does for other sample rates (traced with 48 and 22.05 kHz WAVs):

@@ -1,0 +1,59 @@
+From 7eed474605479743801bf368b09b80fd3a02c5ab Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 21 Oct 2026 21:38:50 +0200
+Subject: [PATCH 49/49] ALSA: arm: pnx4008-dsp: Audio Source only after a FM
+ handover; check reply status
+
+After a handover with the silent stream, line in is not set up: message 80
+(start capturing it) is refused with status 4 since slot 2 is not line in,
+and the DSP replies with the right type, so the error went unnoticed.
+Switching to FM and back then left the DSP without PCM requests until the
+next handover, even with Symbian's music setup sent by hand. So the
+control is only registered when the handover left Symbian's FM setup (no
+PCM stream), and a reply with a status in bits 8-11 now fails the message.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 2a5faca65..1deee581a 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -36,8 +36,10 @@
+  * probably the voice chain). Slot 1 is the PCM stream above; Symbian's FM radio puts slot
+  * 2, line in from the FM receiver, on the music path. After a handover with the FM radio
+  * playing, the "Audio Source" control switches the music path between the two: "PCM" for
+- * ALSA playback, "FM" for the radio (tuned with the si470x driver). On a handover with the
+- * silent stream, "FM" is silent: Symbian's radio sets up more than these messages.
++ * ALSA playback, "FM" for the radio (tuned with the si470x driver). The control only exists
++ * after such a handover: on one with the silent stream, line in is not set up (Symbian's
++ * radio does more than these messages), and switching left the DSP without PCM until the
++ * next handover.
+  */
+ 
+ #include <linux/delay.h>
+@@ -189,8 +191,8 @@ static int pnx4008_dsp_msg(struct pnx4008_dsp *dsp, u8 type, u16 p0, u16 p1)
+ 	apbp_rd(dsp, APBP_REP(1));
+ 	r0 = apbp_rd(dsp, APBP_REP(0));
+ 	mutex_unlock(&dsp->msg_lock);
+-	if ((r0 & 0xff) != type) {
+-		dev_err(dsp->dev, "message %u: reply %04x\n", type, r0);
++	if ((r0 & 0xff) != type || (r0 & 0x0f00)) {
++		dev_err(dsp->dev, "message %u (%04x %04x): reply %04x\n", type, p0, p1, r0);
+ 		return -EIO;
+ 	}
+ 	return 0;
+@@ -560,7 +562,7 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pnx4008_dsp_ops);
+ 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
+ 
+-	if (dsp->fev) {
++	if (dsp->fev && dsp->source == SOURCE_FM) {
+ 		ret = snd_ctl_add(card, snd_ctl_new1(&pnx4008_dsp_source_ctl, dsp));
+ 		if (ret)
+ 			return ret;
+-- 
+2.53.0
+

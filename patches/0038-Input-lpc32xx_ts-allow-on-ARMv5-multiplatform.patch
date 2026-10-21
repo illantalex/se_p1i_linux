@@ -1,7 +1,7 @@
 From 1d6a0e86b42aad0e26c7dcfb55e71e677a6a2be7 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 22:13:28 +0200
-Subject: [PATCH 38/48] Input: lpc32xx_ts - allow on ARMv5 multiplatform
+Subject: [PATCH 38/49] Input: lpc32xx_ts - allow on ARMv5 multiplatform
 
 The PNX4008 has the same touchscreen controller at 0x40048000 (verified on
 the Sony Ericsson P1i: FIFO samples in the LPC32xx format, pen detect on
