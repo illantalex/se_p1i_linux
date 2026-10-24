@@ -35,6 +35,18 @@
  * control replies and some notifications stay queued in the modem. RTS to the modem
  * (GPO_17) is not needed.
  *
+ * Measurements: once a minute, the modem's battery object (OPA IBatteryDevice, method 7) is
+ * asked for its record, on the session Symbian's BServer opened (session and stub address
+ * from regprobe's scan before the handover: /media/card/other/opa.txt, the line with the
+ * IID f7abbe03...; see rootfs/root/opa.sh). Request on channel 22: 0x16, 0x00, then 32-bit
+ * LE words: 8, session, request id, stub, 0, method; reply: 9, status, request id, length,
+ * then the result (32-bit status, the record). Known record fields (2026-10-24, compared
+ * with the other getters and over time): voltage in mV, charge in %, remaining capacity in
+ * mAh, the current (negative while discharging, probably 0.1 mA) and two constant values
+ * (29, 43), one of them probably the temperature in degrees C; all in the status file as
+ * battery_*. The percentage stands in for the level until the first notification. If the
+ * modem refuses the call (opa.txt from an earlier Symbian boot), polling stops.
+ *
  *   p1ibat [-f] [-r off|on]   the daemon. -f: stay in the foreground and print every
  *                             frame; -r: switch the radio off or on at start
  *   p1ibat radio off|on       ask the running daemon to switch the radio
@@ -76,6 +88,15 @@
 #define TYPE_LEVEL	3
 #define NTYPES		16
 
+#define OPA_FILE	"/media/card/other/opa.txt"
+#define OPA_BATTERY_IID	"f7abbe03"
+#define OPA_INVOKE	8
+#define OPA_REPLY	9
+#define OPA_BATTERY_RECORD	7	/* IBatteryDevice method: the whole record */
+#define OPA_RECORD_LEN	63
+#define OPA_POLL_S	60
+#define OPA_TIMEOUT_S	300	/* no reply: send again */
+
 #define STATUS_FILE	"/run/p1i-battery"
 #define POLL_US		2000	/* the 64-byte FIFO fills in 5.5 ms at 115200 */
 #define EMPTY_LEVEL	1
@@ -92,6 +113,24 @@ static unsigned long overruns;
 static int radio = -1;		/* -1 unknown, 0 off, 1 on (as confirmed by the modem) */
 static volatile sig_atomic_t radio_request = -1;
 static volatile uint32_t *u3, *gpio;
+
+/* IBatteryDevice record (method 7): offsets of the fields */
+static const struct {
+	const char *name;
+	int offset, size;
+} record_fields[] = {
+	{ "battery_mv", 12, 4 },
+	{ "battery_current", 24, 4 },
+	{ "battery_43", 28, 4 },	/* constant so far; temperature limit? */
+	{ "battery_29", 32, 4 },	/* constant so far; temperature? */
+	{ "battery_mah", 36, 4 },
+	{ "battery_percent", 40, 1 },
+};
+#define NFIELDS (sizeof(record_fields) / sizeof(record_fields[0]))
+static uint32_t opa_session, opa_stub, opa_reqid = 0x5b000000;
+static int opa_state;		/* 0 no opa.txt yet, 1 polling, -1 refused: stop */
+static int record_valid;
+static uint8_t record[OPA_RECORD_LEN];
 
 static double now(void)
 {
@@ -140,6 +179,13 @@ static void write_status(void)
 			if (seen[m][t])
 				fprintf(f, "%s_type%d=0x%lx\n", msgname[m], t,
 					(unsigned long)(uint32_t)values[m][t]);
+	for (t = 0; record_valid && t < (int)NFIELDS; t++) {
+		const uint8_t *p = record + record_fields[t].offset;
+		int32_t v = record_fields[t].size == 1 ? p[0] :
+			    (int32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24);
+
+		fprintf(f, "%s=%ld\n", record_fields[t].name, (long)v);
+	}
 	fprintf(f, "overruns=%lu\n", overruns);
 	if (fclose(f) == 0)
 		rename(STATUS_FILE ".tmp", STATUS_FILE);
@@ -181,6 +227,25 @@ static void handle_payload(const uint8_t *p, int n)
 		radio = p[2] ? 1 : 0;
 		kmsg("radio %s%s\n", p[1] & CAIF_ERR_BIT ? "already " : "",
 		     radio ? "on" : "off (flight mode)");
+		write_status();
+		return;
+	}
+	/* Reply to our battery record request: 9, status, request id, length, result */
+	if (n >= 2 + 16 && p[0] == CAIF_CH_NOTIFY && le32(p + 2) == OPA_REPLY &&
+	    le32(p + 10) == opa_reqid) {
+		opa_reqid++;	/* answered: the next poll may send */
+		if (le32(p + 6) != 0 || le32(p + 14) != 4 + OPA_RECORD_LEN ||
+		    n < 2 + 16 + 4 + OPA_RECORD_LEN || le32(p + 18) != 0) {
+			kmsg("modem refused the battery record (status 0x%x): " OPA_FILE
+			     " is from an earlier Symbian boot? Not asking again\n", le32(p + 6));
+			opa_state = -1;
+			return;
+		}
+		memcpy(record, p + 22, OPA_RECORD_LEN);
+		record_valid = 1;
+		/* Until the modem's own notification comes, its percentage is the level */
+		if (!seen[0][TYPE_LEVEL] && record[40] <= 100)
+			level = record[40];
 		write_status();
 		return;
 	}
@@ -274,6 +339,69 @@ static void send_payload(const uint8_t *payload, int n)
 	for (t = now(); now() - t < 0.05; )
 		receive_pending();
 	u3[U16_LCR / 4] = lcr;
+}
+
+/* Session and stub of the battery object from regprobe's scan; 0 if not (yet) there */
+static int load_opa(void)
+{
+	FILE *f = fopen(OPA_FILE, "r");
+	char line[200], iid[40];
+	unsigned int phys, session, stub;
+	int found = 0;
+
+	if (!f)
+		return 0;
+	while (!found && fgets(line, sizeof(line), f))
+		if (sscanf(line, "%x %39s %x %x", &phys, iid, &session, &stub) == 4 &&
+		    !strncmp(iid, OPA_BATTERY_IID, strlen(OPA_BATTERY_IID))) {
+			opa_session = session;
+			opa_stub = stub;
+			found = 1;
+		}
+	fclose(f);
+	return found;
+}
+
+static void put32(uint8_t *p, uint32_t v)
+{
+	p[0] = v;
+	p[1] = v >> 8;
+	p[2] = v >> 16;
+	p[3] = v >> 24;
+}
+
+/* Ask for the battery record once a minute, once opa.txt is there (the card is mounted late) */
+static void opa_poll(void)
+{
+	static double next, sent_at;
+	static uint32_t sent_reqid = ~0u;
+	uint8_t req[2 + 24] = { CAIF_CH_NOTIFY, 0 };
+
+	if (opa_state < 0 || now() < next)
+		return;
+	if (opa_state == 0) {
+		next = now() + 10;
+		if (!load_opa())
+			return;
+		opa_state = 1;
+		kmsg("battery record: session 0x%x stub 0x%x from " OPA_FILE "\n",
+		     opa_session, opa_stub);
+	}
+	next = now() + OPA_POLL_S;
+	/* Still waiting for the last answer: only send again after a long silence */
+	if (sent_reqid == opa_reqid && now() - sent_at < OPA_TIMEOUT_S)
+		return;
+	if (sent_reqid == opa_reqid)
+		opa_reqid++;
+	put32(req + 2, OPA_INVOKE);
+	put32(req + 6, opa_session);
+	put32(req + 10, opa_reqid);
+	put32(req + 14, opa_stub);
+	put32(req + 18, 0);
+	put32(req + 22, OPA_BATTERY_RECORD);
+	sent_reqid = opa_reqid;
+	sent_at = now();
+	send_payload(req, sizeof(req));
 }
 
 static void on_signal(int sig)
@@ -382,6 +510,7 @@ usage:
 	for (;;) {
 		receive_pending();
 		answer_modem();
+		opa_poll();
 
 		if (radio_request >= 0) {
 			uint8_t cmd[] = { 0, CAIF_CMD_RADIO_SET, radio_request };

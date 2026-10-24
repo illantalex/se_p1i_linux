@@ -19,6 +19,11 @@
 # 6 u32:N u8:X = vibrate (N < 0x10000, probably ms; X passed to the vibrator driver).
 #   opa.sh IVibratorDevice 6 u32:1000 u8:1
 #   opa.sh IVibratorDevice 5
+# ILedControlDevice (the indicator LED, on the AB2010's LED pins: 1 = red, 2 = green):
+# 3 = number of LEDs (out u32: 2), 4 u8:LED = off, 5 u8:LED u32:ON u16:OFF = blink, ON ms on
+# and OFF ms off (OFF 0: a flash of ON ms now and then, not steady light).
+#   opa.sh ILedControlDevice 5 u8:2 u32:500 u16:500
+#   opa.sh ILedControlDevice 4 u8:2
 # IUsbChargingControl (IID 20563885..., what Symbian's BAPhandler StartCharging calls):
 # 3 = charging current (out u16, mA), 4 u16:N = set it. IIndicationDeviceManager
 # (0d44bf86...): its getters hand out the vibrator, backlight and LED objects, and the modem
@@ -27,7 +32,7 @@
 # stalls).
 #
 # p1ibat reads UART3 too: it is stopped for the call and started again afterwards.
-[ $# -ge 2 ] || { sed -n '2,29s/^# \{0,1\}//p' "$0"; exit 1; }
+[ $# -ge 2 ] || { sed -n '2,34s/^# \{0,1\}//p' "$0"; exit 1; }
 NAME=$1
 METHOD=$2
 shift 2
