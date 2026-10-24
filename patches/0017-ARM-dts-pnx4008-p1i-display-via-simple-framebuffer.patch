@@ -1,7 +1,7 @@
 From b3ed89493b9ea252ba49669532fb0a905f206698 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 14 Oct 2026 21:19:16 +0200
-Subject: [PATCH 17/49] ARM: dts: pnx4008-p1i: display via simple-framebuffer
+Subject: [PATCH 17/51] ARM: dts: pnx4008-p1i: display via simple-framebuffer
 
 Symbian leaves the DUM (Display Update Module) and the Sony panel running
 at handover, refreshing the panel from its framebuffer at 0x81000000 with

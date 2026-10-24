@@ -1,7 +1,7 @@
 From 7373bc7ecebe87a44a38b232f95490282d6fce5f Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 22:38:26 +0200
-Subject: [PATCH 41/49] rtc: lpc32xx: allow on ARMv5 multiplatform
+Subject: [PATCH 41/51] rtc: lpc32xx: allow on ARMv5 multiplatform
 
 The PNX4008 has the same RTC at 0x40024000 (verified on the Sony Ericsson
 P1i: counter and down-counter as in the LPC32xx, key register holding the

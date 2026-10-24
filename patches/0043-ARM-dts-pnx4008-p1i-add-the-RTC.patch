@@ -1,7 +1,7 @@
 From dfd75ab0790d766a72c07c4989dfcf722f312cb8 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 19 Oct 2026 22:38:27 +0200
-Subject: [PATCH 43/49] ARM: dts: pnx4008-p1i: add the RTC
+Subject: [PATCH 43/51] ARM: dts: pnx4008-p1i: add the RTC
 
 The RTC Symbian keeps running, counting from 2000-01-01 (nxp,epoch-year).
 No interrupt yet: the LPC32xx RTC line (SIC1 20) reads active in the raw

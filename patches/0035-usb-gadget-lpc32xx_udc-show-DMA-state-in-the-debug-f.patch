@@ -1,7 +1,7 @@
 From de8357fe3674c30cceea94c1df6f06c60a9d0623 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 18 Oct 2026 16:26:35 +0200
-Subject: [PATCH 35/49] usb: gadget: lpc32xx_udc: show DMA state in the debug
+Subject: [PATCH 35/51] usb: gadget: lpc32xx_udc: show DMA state in the debug
  file
 
 The debug file was created as "driver/udc", which is not a valid debugfs

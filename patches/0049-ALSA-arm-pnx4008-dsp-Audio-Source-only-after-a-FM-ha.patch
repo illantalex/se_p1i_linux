@@ -1,7 +1,7 @@
 From 7eed474605479743801bf368b09b80fd3a02c5ab Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 21 Oct 2026 21:38:50 +0200
-Subject: [PATCH 49/49] ALSA: arm: pnx4008-dsp: Audio Source only after a FM
+Subject: [PATCH 49/51] ALSA: arm: pnx4008-dsp: Audio Source only after a FM
  handover; check reply status
 
 After a handover with the silent stream, line in is not set up: message 80

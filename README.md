@@ -34,7 +34,7 @@ panel itself, so it relies on starting from Symbian.
 
 | Path | What |
 |---|---|
-| `patches/` | The kernel changes, 49 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
+| `patches/` | The kernel changes, 51 patches on Linux 6.1.2 (drivers, Kconfig, device tree) |
 | `p1i.config` | Kernel config fragment, applied with `KCONFIG_ALLCONFIG` on top of `allnoconfig` |
 | `dts/pnx4008-p1i.dts` | Board device tree (the copy to edit; `build.sh` syncs it into `linux/`) |
 | `busybox.config` | BusyBox 1.37.0: static, armel glibc |

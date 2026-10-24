@@ -94,6 +94,8 @@ static const uint32_t area_off[8] = { 0x1000, 0x1E00, 0x2600, 0x0000, 0x2E00, 0x
 /* Data memory words not written by "boot": the DSP's own I/O registers (as on the 3DS). */
 #define DATA_MMIO_FIRST	0x8000
 #define DATA_MMIO_LAST	0x87FF
+#define PMU_SHUTDOWN	0x8086	/* DSP PMU: module shutdown bits (teakra pmu.md) */
+#define PMU_SHUTDOWN_BTDMP	0x809A
 
 static volatile uint8_t *apbp, *audio;
 
@@ -295,6 +297,18 @@ static void boot(const char *code_path, const char *data_path, uint32_t shared, 
 		download(data, nd, MEM_DATA, 0);
 	}
 	printf("data: %zu words at 0 (0x%x-0x%x skipped)\n", nd, DATA_MMIO_FIRST, DATA_MMIO_LAST);
+	/*
+	 * The DSP's PMU keeps its module shutdown bits through a reset: Symbian's standby
+	 * (message 3 (1)) shuts all modules down, the AHB master (bit 5) included, and only
+	 * the core and some others come back on an interrupt. Clear them, or the DSP cannot
+	 * read the shared buffer or SDRAM.
+	 */
+	{
+		static const uint16_t zero = 0;
+
+		download(&zero, 1, MEM_DATA, PMU_SHUTDOWN);
+		download(&zero, 1, MEM_DATA, PMU_SHUTDOWN_BTDMP);
+	}
 	start();
 	for (i = 0; i < 1000 && !(rd(PSTS) & PSTS_REP0); i++)
 		delay_us(1000);

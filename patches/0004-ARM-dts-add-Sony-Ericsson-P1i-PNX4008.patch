@@ -1,7 +1,7 @@
 From 71b0e5607aa67cb4ac67248558ac577606af2bd7 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 12 Oct 2026 23:40:32 +0200
-Subject: [PATCH 04/49] ARM: dts: add Sony Ericsson P1i (PNX4008)
+Subject: [PATCH 04/51] ARM: dts: add Sony Ericsson P1i (PNX4008)
 
 Bring-up device tree for the Sony Ericsson P1i: NXP PNX4008 (ARM926EJ-S
 @ 208 MHz), 123 MB usable SDRAM, MIC/SIC1/SIC2, UART3-6, the millisecond

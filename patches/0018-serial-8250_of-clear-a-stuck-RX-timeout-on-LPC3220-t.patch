@@ -1,7 +1,7 @@
 From 5a31edda78d23f5aadab4888b6903addfc3e315f Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Thu, 15 Oct 2026 22:30:21 +0200
-Subject: [PATCH 18/49] serial: 8250_of: clear a stuck RX timeout on
+Subject: [PATCH 18/51] serial: 8250_of: clear a stuck RX timeout on
  LPC3220-type UARTs
 
 The PNX4008 UART (same block as the LPC3220) can be left by the boot

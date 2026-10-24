@@ -1,0 +1,40 @@
+From 6bb532be6f5e4d05a1b948ad438e48873e34c86d Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 24 Oct 2026 21:33:21 +0200
+Subject: [PATCH 51/51] ARM: dts: pnx4008-p1i: map DSPPLLCTRL and the DSP's
+ parameter window
+
+The DSP node's second reg now covers DSPPLLCTRL (0x400e8060) with
+DSPCLKCTRL, for the probe's standby test, and the fourth the shared
+buffer's parameters from 0x400 to 0xbff (status block, FEV, message 52's
+block) instead of the FEV alone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 27d3a21a0..a2559ae4d 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -419,9 +419,13 @@ usb_transceiver: usb-transceiver@2c {
+ 		 */
+ 		audio-dsp@400c0000 {
+ 			compatible = "nxp,pnx4008-dsp-pcm";
+-			/* APBP, DSPCLKCTRL, the PCM halves and the FEV in the shared buffer */
+-			reg = <0x400c0000 0x40>, <0x400e8064 0x4>, <0x08001000 0x7e0>,
+-			      <0x08000810 0xc>;
++			/*
++			 * APBP, DSPPLLCTRL and DSPCLKCTRL, the PCM halves, and the shared
++			 * buffer's parameters (status at 0x440, FEV at 0x810, message 52's
++			 * block at 0xba4)
++			 */
++			reg = <0x400c0000 0x40>, <0x400e8060 0x8>, <0x08001000 0x7e0>,
++			      <0x08000400 0x800>;
+ 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
+ 			memory-region = <&dsp_symbian>;
+ 		};
+-- 
+2.53.0
+

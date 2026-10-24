@@ -1,7 +1,7 @@
 From 94695a7e61bd5d67953791b8e58f6a17b5cb4ec6 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 21 Oct 2026 21:22:09 +0200
-Subject: [PATCH 47/49] ALSA: arm: pnx4008-dsp: "Audio Source" control to
+Subject: [PATCH 47/51] ALSA: arm: pnx4008-dsp: "Audio Source" control to
  switch between PCM and FM
 
 The DSP firmware (Teak code, disassembled with teakra) has three stream

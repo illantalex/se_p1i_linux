@@ -1,0 +1,217 @@
+From dd7e139b6b24dc78e87c9a99175c78597cc70799 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sat, 24 Oct 2026 21:33:21 +0200
+Subject: [PATCH 50/51] ALSA: arm: pnx4008-dsp: tell an idle, a powered-down
+ and a FM-set-up DSP apart
+
+When the handover left no PCM stream (semaphore 2 masked), the probe took
+it for Symbian's FM radio. Without the radio that DSP is either idle with
+its PLLs running, or in standby with them off (Symbian's state after a
+while without sound). The probe now tells them apart:
+ - halfword 4 of the DSP's status block (shared buffer + 0x448) is the
+   line-in rate index, 8 while Symbian's radio captures line in at 48 kHz:
+   FM handover, the Audio Source control as before (halfword 0 = 1, the
+   old test, is also set on an idle DSP);
+ - DSPPLLCTRL bit 0 (PLL locked) clear: standby, no audio, a warning
+   instead of timeouts on every message. Standby (message 3 (1)) shuts
+   the DSP's AHB master down in its PMU and no interrupt recovers it;
+ - otherwise idle: the driver sets up the PCM stream itself, after
+   writing the parameter block that message 52 checks (0x2000, zeros, the
+   message number in the last halfword, constant in Symbian) and sending
+   it. The output route still comes from user space (audio-route.sh).
+
+The parameter window of the shared buffer is now mapped as a whole
+(0x400-0xbff: status block, FEV, message 52's block), and the second reg
+covers DSPPLLCTRL as well as DSPCLKCTRL.
+
+Tested on the phone: the powered-down warning. Not yet through the
+driver: the FM-handover test (the value 8 is in every FM capture) and the
+idle path (done by hand: block, message 52, PCM switch, route -> music).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 94 ++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 79 insertions(+), 15 deletions(-)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 1deee581a..6e879de21 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -40,6 +40,12 @@
+  * after such a handover: on one with the silent stream, line in is not set up (Symbian's
+  * radio does more than these messages), and switching left the DSP without PCM until the
+  * next handover.
++ *
++ * After a handover with no stream at all (D:\other\nostream.txt, radio off) the DSP is
++ * idle, and the driver sets up the PCM stream itself: the same switch, after the parameter
++ * block that message 52 checks (Symbian keeps it constant in the shared buffer; without it
++ * the DSP refuses the route's message 52). Symbian's idle output is muted, so the route
++ * (amplifiers, unmute, gains) has to be set from user space as for a route change.
+  */
+ 
+ #include <linux/delay.h>
+@@ -89,8 +95,18 @@
+ #define DSPCLKCTRL_REQ	BIT(9)	/* DSP clock request, held while setting PSEM */
+ 
+ #define STREAM_SEM	BIT(2)	/* area 0 semaphore, both directions */
++/* The mapped parameter window: shared buffer + 0x400 to 0xbff */
++#define PARAMS_OFF	0x400
++#define STATUS_OFF	(0x440 - PARAMS_OFF)	/* DSP status block */
++#define STATUS_LINE_IN_RATE	8	/* its halfword 4: line-in rate index, 8 with FM */
++#define DSPPLL_LOCK	BIT(0)	/* DSPPLLCTRL: PLL locked */
+ #define FEV_WORDS	6	/* the FEV at shared buffer + 0x810 */
+ #define FEV_SHARED_OFF	0x810
++#define FEV_OFF		(FEV_SHARED_OFF - PARAMS_OFF)
++#define MSG_BLOCK52	52	/* message 52: 16 halfwords at shared buffer + 0xba4 */
++#define BLOCK52_SHARED	0xba4
++#define BLOCK52_OFF	(BLOCK52_SHARED - PARAMS_OFF)
++#define BLOCK52_WORDS	16
+ #define FEV_SRC_PCM	0x0900	/* halfword 1: ARM_PCM1 (0x0100) + Suzi ADC line in */
+ #define FEV_SRC_LINE_IN	0x0800	/* halfword 1: Suzi ADC line in */
+ #define HALF_BYTES	1008
+@@ -115,6 +131,7 @@ static const struct snd_pcm_hw_constraint_list pnx4008_dsp_rate_list = {
+ struct pnx4008_dsp {
+ 	struct device *dev;
+ 	void __iomem *apbp;
++	void __iomem *dsppllctrl;	/* DSPPLLCTRL, then DSPCLKCTRL */
+ 	void __iomem *dspclkctrl;
+ 	void __iomem *area;		/* two halves in the internal SRAM */
+ 	struct snd_card *card;
+@@ -126,7 +143,7 @@ struct pnx4008_dsp {
+ 	bool running;
+ 	struct mutex msg_lock;		/* command/reply registers */
+ 	unsigned int rate;		/* the stream's input rate on the DSP */
+-	void __iomem *fev;		/* FEV in the shared buffer, NULL if not mapped */
++	void __iomem *params;		/* shared buffer + 0x400, NULL if not mapped */
+ 	unsigned int source;		/* SOURCE_PCM or SOURCE_FM */
+ };
+ 
+@@ -400,7 +417,7 @@ static snd_pcm_uframes_t pnx4008_dsp_pointer(struct snd_pcm_substream *substream
+ /* Message 6 with the FEV's source halfword replaced, the route (halfwords 2-5) kept. */
+ static int pnx4008_dsp_fev_source(struct pnx4008_dsp *dsp, u16 src)
+ {
+-	writew(src, dsp->fev + 2);
++	writew(src, dsp->params + FEV_OFF + 2);
+ 	return pnx4008_dsp_msg(dsp, MSG_FEV, FEV_WORDS, FEV_SHARED_OFF);
+ }
+ 
+@@ -485,6 +502,27 @@ static const struct snd_kcontrol_new pnx4008_dsp_source_ctl = {
+ 	.put = pnx4008_dsp_source_put,
+ };
+ 
++/*
++ * An idle DSP (no stream left by Symbian): message 52's block as Symbian keeps it (0x2000,
++ * zeros, and the message number in the last halfword), then slot 1 as PCM on the music
++ * path.
++ */
++static int pnx4008_dsp_idle_setup(struct pnx4008_dsp *dsp)
++{
++	void __iomem *block = dsp->params + BLOCK52_OFF;
++	unsigned int i;
++	int ret;
++
++	writew(0x2000, block);
++	for (i = 1; i < BLOCK52_WORDS - 1; i++)
++		writew(0, block + 2 * i);
++	writew(0x4000 | MSG_BLOCK52, block + 2 * (BLOCK52_WORDS - 1));
++	ret = pnx4008_dsp_msg(dsp, MSG_BLOCK52, BLOCK52_WORDS, BLOCK52_SHARED);
++	if (!ret)
++		ret = pnx4008_dsp_set_source(dsp, SOURCE_PCM);
++	return ret;
++}
++
+ static const struct snd_pcm_ops pnx4008_dsp_ops = {
+ 	.open = pnx4008_dsp_open,
+ 	.close = pnx4008_dsp_close,
+@@ -499,6 +537,7 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	struct pnx4008_dsp *dsp;
+ 	struct snd_card *card;
+ 	struct snd_pcm *pcm;
++	bool fm_handover = false, idle = false;
+ 	int ret;
+ 
+ 	ret = snd_devm_card_new(dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1, THIS_MODULE,
+@@ -521,27 +560,44 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	dsp->apbp = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(dsp->apbp))
+ 		return PTR_ERR(dsp->apbp);
+-	dsp->dspclkctrl = devm_platform_ioremap_resource(pdev, 1);
+-	if (IS_ERR(dsp->dspclkctrl))
+-		return PTR_ERR(dsp->dspclkctrl);
++	dsp->dsppllctrl = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(dsp->dsppllctrl))
++		return PTR_ERR(dsp->dsppllctrl);
++	dsp->dspclkctrl = dsp->dsppllctrl + 4;
+ 	dsp->area = devm_platform_ioremap_resource(pdev, 2);
+ 	if (IS_ERR(dsp->area))
+ 		return PTR_ERR(dsp->area);
+ 
+-	/* Optional: the FEV, for the "Audio Source" control */
++	/* Optional: the parameter window, for the "Audio Source" control and an idle DSP */
+ 	if (platform_get_resource(pdev, IORESOURCE_MEM, 3)) {
+-		dsp->fev = devm_platform_ioremap_resource(pdev, 3);
+-		if (IS_ERR(dsp->fev))
+-			return PTR_ERR(dsp->fev);
++		dsp->params = devm_platform_ioremap_resource(pdev, 3);
++		if (IS_ERR(dsp->params))
++			return PTR_ERR(dsp->params);
+ 	}
+ 
+-	if (apbp_rd(dsp, APBP_PMASK) & STREAM_SEM) {
+-		dev_info(dev, "no PCM stream left by Symbian (PMASK %04x): Audio Source FM\n",
+-			 apbp_rd(dsp, APBP_PMASK));
+-		dsp->source = SOURCE_FM;
+-	} else
++	if (!(apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)) {
+ 		dev_info(dev, "adopting Symbian's audio stream (PMASK %04x, SEM %04x)\n",
+ 			 apbp_rd(dsp, APBP_PMASK), apbp_rd(dsp, APBP_SEM));
++	} else if (!dsp->params) {
++		dev_warn(dev, "no audio stream left by Symbian (PMASK %04x): playback will be silent\n",
++			 apbp_rd(dsp, APBP_PMASK));
++	} else if (readw(dsp->params + STATUS_OFF + STATUS_LINE_IN_RATE) == 8) {
++		dev_info(dev, "Symbian's FM radio left line in running: Audio Source FM\n");
++		dsp->source = SOURCE_FM;
++		fm_handover = true;
++	} else if (!(readl(dsp->dsppllctrl) & DSPPLL_LOCK)) {
++		/*
++		 * Symbian puts the DSP into standby (message 3 (1)) and switches its PLLs off
++		 * when nothing has played for a while. Standby shuts the DSP's own modules down
++		 * in its PMU, the AHB master included, which no interrupt brings back: restarting
++		 * the PLLs makes the DSP answer messages again, but not read the shared buffer.
++		 * Booting it again with those PMU bits cleared works, but its output does not
++		 * run yet.
++		 */
++		dev_warn(dev, "DSP powered down by Symbian (PLL off): no audio\n");
++	} else {
++		idle = true;
++	}
+ 	/*
+ 	 * Nobody refills the halves between the handover and the first playback: the DSP
+ 	 * keeps playing them in a loop, which is a loud beep if Symbian left audio in them.
+@@ -549,6 +605,14 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	memset_io(dsp->area, 0, 2 * HALF_BYTES);
+ 	pnx4008_dsp_load_modules(dsp);
+ 
++	if (idle) {
++		ret = pnx4008_dsp_idle_setup(dsp);
++		if (ret)
++			dev_warn(dev, "idle DSP: cannot set up a PCM stream (%d)\n", ret);
++		else
++			dev_info(dev, "idle DSP: PCM stream set up (route it with audio-route.sh)\n");
++	}
++
+ 	strscpy(card->driver, "PNX4008-DSP", sizeof(card->driver));
+ 	strscpy(card->shortname, "PNX4008 DSP", sizeof(card->shortname));
+ 	strscpy(card->longname, "NXP PNX4008 audio DSP (stream adopted from Symbian)",
+@@ -562,7 +626,7 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pnx4008_dsp_ops);
+ 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, NULL, 0, 0);
+ 
+-	if (dsp->fev && dsp->source == SOURCE_FM) {
++	if (fm_handover) {
+ 		ret = snd_ctl_add(card, snd_ctl_new1(&pnx4008_dsp_source_ctl, dsp));
+ 		if (ret)
+ 			return ret;
+-- 
+2.53.0
+

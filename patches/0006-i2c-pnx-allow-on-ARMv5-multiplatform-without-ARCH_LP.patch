@@ -1,7 +1,7 @@
 From ec16ff0647100448785e1f9caddc65cf77811e0f Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 13 Oct 2026 00:18:08 +0200
-Subject: [PATCH 06/49] i2c: pnx: allow on ARMv5 multiplatform without
+Subject: [PATCH 06/51] i2c: pnx: allow on ARMv5 multiplatform without
  ARCH_LPC32XX
 
 The PNX4008 has the same IP3204 I2C controllers the driver was written

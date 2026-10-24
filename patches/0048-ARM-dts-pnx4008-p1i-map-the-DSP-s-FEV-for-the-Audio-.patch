@@ -1,7 +1,7 @@
 From 7c61e5bcc5664dcea5c061ae477638a4211cefae Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 21 Oct 2026 21:22:10 +0200
-Subject: [PATCH 48/49] ARM: dts: pnx4008-p1i: map the DSP's FEV for the Audio
+Subject: [PATCH 48/51] ARM: dts: pnx4008-p1i: map the DSP's FEV for the Audio
  Source control
 
 The Function Enable Vector at shared buffer + 0x810 (internal SRAM), six

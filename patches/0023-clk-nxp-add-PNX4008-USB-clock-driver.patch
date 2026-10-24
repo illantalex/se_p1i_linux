@@ -1,7 +1,7 @@
 From fe361a7d58796307a7116023cc347fac77e28c6a Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Fri, 16 Oct 2026 22:43:12 +0200
-Subject: [PATCH 23/49] clk: nxp: add PNX4008 USB clock driver
+Subject: [PATCH 23/51] clk: nxp: add PNX4008 USB clock driver
 
 The NXP PNX4008 has the LPC32xx USB block, but its clock block differs and
 the LPC32xx clock driver, which takes over the whole block, would turn off
