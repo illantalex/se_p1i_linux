@@ -44,8 +44,9 @@
  * with the other getters and over time): voltage in mV, charge in %, remaining capacity in
  * mAh, the current (negative while discharging, probably 0.1 mA) and two constant values
  * (29, 43), one of them probably the temperature in degrees C; all in the status file as
- * battery_*. The percentage stands in for the level until the first notification. If the
- * modem refuses the call (opa.txt from an earlier Symbian boot), polling stops.
+ * battery_*. The percentage stands in for the level until the first notification. An
+ * opa.txt from an earlier Symbian boot is not used (its stub addresses can hang the modem);
+ * if the modem refuses the call anyway, polling stops.
  *
  *   p1ibat [-f] [-r off|on]   the daemon. -f: stay in the foreground and print every
  *                             frame; -r: switch the radio off or on at start
@@ -61,6 +62,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -95,7 +97,8 @@
 #define OPA_BATTERY_RECORD	7	/* IBatteryDevice method: the whole record */
 #define OPA_RECORD_LEN	63
 #define OPA_POLL_S	60
-#define OPA_TIMEOUT_S	300	/* no reply: send again */
+#define OPA_MAX_AGE_S	1800	/* opa.txt older than this before our boot: another boot's */
+#define OPA_TIMEOUT_S	30	/* no reply by the next poll (lost in an overrun): send again */
 
 #define STATUS_FILE	"/run/p1i-battery"
 #define POLL_US		2000	/* the 64-byte FIFO fills in 5.5 ms at 115200 */
@@ -341,14 +344,33 @@ static void send_payload(const uint8_t *payload, int n)
 	u3[U16_LCR / 4] = lcr;
 }
 
-/* Session and stub of the battery object from regprobe's scan; 0 if not (yet) there */
+/*
+ * Session and stub of the battery object from regprobe's scan; 0 if not (yet) there, -1 if
+ * the file is from an earlier Symbian boot. Its stub addresses are then meaningless, and
+ * the modem dereferences them: a stale stub hung the modem (2026-10-25). The scan runs just
+ * before the handover, so its file time (UTC, like ours) must be shortly before our boot.
+ */
 static int load_opa(void)
 {
-	FILE *f = fopen(OPA_FILE, "r");
 	char line[200], iid[40];
 	unsigned int phys, session, stub;
+	struct timespec up;
+	struct stat st;
+	time_t boot;
 	int found = 0;
+	FILE *f;
 
+	if (stat(OPA_FILE, &st) < 0)
+		return 0;
+	clock_gettime(CLOCK_BOOTTIME, &up);
+	boot = time(NULL) - up.tv_sec;
+	if (st.st_mtime < boot - OPA_MAX_AGE_S || st.st_mtime > boot + 60) {
+		kmsg(OPA_FILE " is not from the Symbian boot before this handover (%ld s before"
+		     " it): not asking the modem (run regprobe's scan before every handover)\n",
+		     (long)(boot - st.st_mtime));
+		return -1;
+	}
+	f = fopen(OPA_FILE, "r");
 	if (!f)
 		return 0;
 	while (!found && fgets(line, sizeof(line), f))
@@ -381,14 +403,19 @@ static void opa_poll(void)
 		return;
 	if (opa_state == 0) {
 		next = now() + 10;
-		if (!load_opa())
+		switch (load_opa()) {
+		case 0:
 			return;
+		case -1:
+			opa_state = -1;
+			return;
+		}
 		opa_state = 1;
 		kmsg("battery record: session 0x%x stub 0x%x from " OPA_FILE "\n",
 		     opa_session, opa_stub);
 	}
 	next = now() + OPA_POLL_S;
-	/* Still waiting for the last answer: only send again after a long silence */
+	/* Unanswered since the last poll: the reply was lost, ask again with a new request id */
 	if (sent_reqid == opa_reqid && now() - sent_at < OPA_TIMEOUT_S)
 		return;
 	if (sent_reqid == opa_reqid)

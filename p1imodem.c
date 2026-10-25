@@ -46,6 +46,8 @@
  *                                          break stays off
  *   p1imodem raw HEX...                    send one frame with this payload (first byte =
  *                                          channel) and print the replies for 4 s
+ *   p1imodem send HEX...                   the same, replies for 0.3 s only (for calls in
+ *                                          quick succession)
  *   p1imodem at "AT+CFUN?" [CHTYPE PRIO PHYID]
  *                                          open an AT channel, send the command, print
  *                                          the replies for 10 s (default 2 15 1: plain AT,
@@ -281,7 +283,7 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
-	if (!strcmp(argv[1], "raw")) {
+	if (!strcmp(argv[1], "raw") || !strcmp(argv[1], "send")) {
 		uint8_t payload[256];
 		int n;
 
@@ -294,7 +296,7 @@ int main(int argc, char **argv)
 		/* The modem answers control requests only once the break is back */
 		receive(0.05, 0);
 		u3[U16_LCR / 4] = lcr;
-		receive(4, 0);
+		receive(strcmp(argv[1], "send") ? 4 : 0.3, 0);
 		return 0;
 	}
 	if (strcmp(argv[1], "at")) {

@@ -44,6 +44,16 @@ if [ -z "$M" ]; then
 	mount -o ro /dev/mspblk0p1 "$T" || exit 1
 	M=$T
 fi
+# The scan must be from the Symbian boot before this handover: another boot's stub
+# addresses are meaningless to the modem, which dereferences them (one hung it, 2026-10-25)
+BOOT=$(($(date +%s) - $(cut -d. -f1 /proc/uptime)))
+AGE=$((BOOT - $(stat -c %Y "$M/other/opa.txt")))
+if [ "$FORCE" != 1 ] && { [ $AGE -gt 1800 ] || [ $AGE -lt -60 ]; }; then
+	echo "other/opa.txt is not from the Symbian boot before this handover ($AGE s before it):"
+	echo "run regprobe's scan before handing over (FORCE=1 to use it anyway)"
+	[ -n "$T" ] && umount "$T" && rmdir "$T"
+	exit 1
+fi
 LINE=$(tr -d "\r" < "$M/other/opa.txt" | awk -v n="$NAME" '$5 == n || index($2, n) == 1 { print; exit }')
 if [ -n "$T" ]; then
 	umount "$T"
