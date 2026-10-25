@@ -3,7 +3,7 @@
 # (EMP's "Open Platform API": the DB2001 modem's services for the application side), the
 # way Symbian's BServer does it, on the session it opened before the handover.
 #
-# Before the handover, in Symbian: D:\other\opascan.txt present, run regprobe. It writes
+# Before every handover, linuxhandover (since a068af6; or regprobe's opascan mode) writes
 # D:\other\opa.txt: one line per BServer proxy, <phys> <IID> <session> <stub> [name]. The
 # modem keeps running through the handover, so these stay valid until it is reset.
 #
@@ -52,7 +52,7 @@ BOOT=$(($(date +%s) - $(cut -d. -f1 /proc/uptime)))
 AGE=$((BOOT - $(stat -c %Y "$M/other/opa.txt")))
 if [ "$FORCE" != 1 ] && { [ $AGE -gt 1800 ] || [ $AGE -lt -60 ]; }; then
 	echo "other/opa.txt is not from the Symbian boot before this handover ($AGE s before it):"
-	echo "run regprobe's scan before handing over (FORCE=1 to use it anyway)"
+	echo "linuxhandover writes it before every handover since a068af6 (FORCE=1 to use it anyway)"
 	[ -n "$T" ] && umount "$T" && rmdir "$T"
 	exit 1
 fi

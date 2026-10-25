@@ -37,16 +37,16 @@
  *
  * Measurements: once a minute, the modem's battery object (OPA IBatteryDevice, method 7) is
  * asked for its record, on the session Symbian's BServer opened (session and stub address
- * from regprobe's scan before the handover: /media/card/other/opa.txt, the line with the
- * IID f7abbe03...; see rootfs/root/opa.sh). Request on channel 22: 0x16, 0x00, then 32-bit
- * LE words: 8, session, request id, stub, 0, method; reply: 9, status, request id, length,
- * then the result (32-bit status, the record). Known record fields (2026-10-24, compared
- * with the other getters and over time): voltage in mV, charge in %, remaining capacity in
- * mAh, the current (negative while discharging, probably 0.1 mA) and two constant values
- * (29, 43), one of them probably the temperature in degrees C; all in the status file as
- * battery_*. The percentage stands in for the level until the first notification. An
- * opa.txt from an earlier Symbian boot is not used (its stub addresses can hang the modem);
- * if the modem refuses the call anyway, polling stops.
+ * from the scan linuxhandover, or regprobe, does before the handover: /media/card/other/
+ * opa.txt, the line with the IID f7abbe03...; see rootfs/root/opa.sh). Request on channel
+ * 22: 0x16, 0x00, then 32-bit LE words: 8, session, request id, stub, 0, method; reply: 9,
+ * status, request id, length, then the result (32-bit status, the record). Known record
+ * fields (2026-10-24, compared with the other getters and over time): voltage in mV, charge
+ * in %, remaining capacity in mAh, the current (negative while discharging, probably 0.1
+ * mA) and two constant values (29, 43), one of them probably the temperature in degrees C;
+ * all in the status file as battery_*. The percentage stands in for the level until the
+ * first notification. An opa.txt from an earlier Symbian boot is not used (its stub
+ * addresses can hang the modem); if the modem refuses the call anyway, polling stops.
  *
  * Power key: it hangs on the modem's power chip, and the modem reports it as a notification,
  * message 0x25, method 3: 0 = pressed, 3 = released, then the key code 0x65 (seen with the
@@ -480,7 +480,7 @@ static int load_opa(void)
 	boot = time(NULL) - up.tv_sec;
 	if (st.st_mtime < boot - OPA_MAX_AGE_S || st.st_mtime > boot + 60) {
 		kmsg(OPA_FILE " is not from the Symbian boot before this handover (%ld s before"
-		     " it): not asking the modem (run regprobe's scan before every handover)\n",
+		     " it): not asking the modem (linuxhandover writes it since a068af6)\n",
 		     (long)(boot - st.st_mtime));
 		return -1;
 	}
