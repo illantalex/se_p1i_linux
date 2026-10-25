@@ -48,6 +48,12 @@
  * opa.txt from an earlier Symbian boot is not used (its stub addresses can hang the modem);
  * if the modem refuses the call anyway, polling stops.
  *
+ * Power key: it hangs on the modem's power chip, and the modem reports it as a notification,
+ * message 0x25, method 3: 0 = pressed, 3 = released, then the key code 0x65 (seen with the
+ * modem even in its shut-down state). p1ibat reports it as KEY_POWER on a uinput device
+ * ("P1i power key", for whatever runs on top), and held for 3 s it reboots, which ends up
+ * in Symbian: the way out of Linux without a shell.
+ *
  *   p1ibat [-f] [-r off|on]   the daemon. -f: stay in the foreground and print every
  *                             frame; -r: switch the radio off or on at start
  *   p1ibat radio off|on       ask the running daemon to switch the radio
@@ -55,12 +61,14 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/uinput.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -88,6 +96,11 @@
 #define MSG_BATTERY	0x04
 #define MSG_BATTERY2	0x21
 #define TYPE_LEVEL	3
+#define MSG_KEY		0x25
+#define KEY_EVENT_DOWN	0
+#define KEY_EVENT_UP	3
+#define KEYCODE_POWER	0x65
+#define POWER_HOLD_S	3	/* held this long: reboot */
 #define NTYPES		16
 
 #define OPA_FILE	"/media/card/other/opa.txt"
@@ -116,6 +129,8 @@ static unsigned long overruns;
 static int radio = -1;		/* -1 unknown, 0 off, 1 on (as confirmed by the modem) */
 static volatile sig_atomic_t radio_request = -1;
 static volatile uint32_t *u3, *gpio;
+static int uinput_fd = -1;
+static double power_down_at;	/* 0: power key not held */
 
 /* IBatteryDevice record (method 7): offsets of the fields */
 static const struct {
@@ -212,6 +227,41 @@ static uint32_t le32(const uint8_t *p)
 	return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
+/* The power key as an input device; without uinput the hold-to-reboot still works */
+static void power_key_setup(void)
+{
+	struct uinput_setup us;
+
+	uinput_fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+	if (uinput_fd < 0)
+		return;
+	memset(&us, 0, sizeof(us));
+	us.id.bustype = BUS_HOST;
+	strcpy(us.name, "P1i power key");
+	if (ioctl(uinput_fd, UI_SET_EVBIT, EV_KEY) < 0 ||
+	    ioctl(uinput_fd, UI_SET_KEYBIT, KEY_POWER) < 0 ||
+	    ioctl(uinput_fd, UI_DEV_SETUP, &us) < 0 || ioctl(uinput_fd, UI_DEV_CREATE) < 0) {
+		close(uinput_fd);
+		uinput_fd = -1;
+	}
+}
+
+static void power_key_report(int down)
+{
+	struct input_event ev[2];
+
+	if (uinput_fd < 0)
+		return;
+	memset(ev, 0, sizeof(ev));
+	ev[0].type = EV_KEY;
+	ev[0].code = KEY_POWER;
+	ev[0].value = down;
+	ev[1].type = EV_SYN;
+	ev[1].code = SYN_REPORT;
+	/* Nothing to do if it fails: the key is only lost for whoever reads the device */
+	(void)!write(uinput_fd, ev, sizeof(ev));
+}
+
 /* One CAIF payload (without length and FCS) */
 static void handle_payload(const uint8_t *p, int n)
 {
@@ -258,6 +308,16 @@ static void handle_payload(const uint8_t *p, int n)
 	type = le32(p + 14);
 	if (n >= 2 + 20)
 		value = le32(p + 18);
+	if (msg == MSG_KEY && n >= 2 + 24 && (le32(p + 22) & 0xffff) == KEYCODE_POWER) {
+		if (value == KEY_EVENT_DOWN && !power_down_at) {
+			power_down_at = now();
+			power_key_report(1);
+		} else if (value == KEY_EVENT_UP && power_down_at) {
+			power_down_at = 0;
+			power_key_report(0);
+		}
+		return;
+	}
 	if (msg == MSG_BATTERY || msg == MSG_BATTERY2)
 		m = 0;
 	else if (msg == 0x20 || msg == 0x08)
@@ -530,6 +590,7 @@ usage:
 		perror("daemon");
 		return 1;
 	}
+	power_key_setup();
 	signal(SIGUSR1, on_signal);
 	signal(SIGUSR2, on_signal);
 	write_status();
@@ -575,6 +636,13 @@ usage:
 		if (now() - status_at >= 60) {
 			status_at = now();
 			write_status();
+		}
+		if (power_down_at && now() - power_down_at >= POWER_HOLD_S) {
+			power_down_at = 0;
+			kmsg("power key held for %d s: rebooting\n", POWER_HOLD_S);
+			execl("/sbin/reboot", "reboot", (char *)NULL);
+			execlp("reboot", "reboot", (char *)NULL);
+			kmsg("reboot failed\n");
 		}
 		if (empty_since && now() - empty_since >= EMPTY_SECONDS) {
 			kmsg("battery empty: powering off\n");
