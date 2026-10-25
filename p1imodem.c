@@ -271,7 +271,8 @@ int main(int argc, char **argv)
 
 		for (n = 0; n < argc - 4 && n + 1 < (int)sizeof(payload); n++)
 			payload[n + 1] = strtoul(argv[n + 4], NULL, 16);
-		lcr = u3[U16_LCR / 4];
+		/* restored at the end with the break on: the idle state (and replies need it) */
+		lcr = u3[U16_LCR / 4] | U16_LCR_BREAK;
 		for (ch = from; ch <= to; ch++) {
 			payload[0] = ch;
 			u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
@@ -289,7 +290,8 @@ int main(int argc, char **argv)
 
 		for (n = 0; n < argc - 2 && n < (int)sizeof(payload); n++)
 			payload[n] = strtoul(argv[n + 2], NULL, 16);
-		lcr = u3[U16_LCR / 4];
+		/* restored at the end with the break on: the idle state (and replies need it) */
+		lcr = u3[U16_LCR / 4] | U16_LCR_BREAK;
 		u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
 		receive(0.2, 0);
 		send_frame(payload, n);
@@ -312,7 +314,8 @@ int main(int argc, char **argv)
 		uint8_t at[256];
 		int n, ch;
 
-		lcr = u3[U16_LCR / 4];
+		/* restored at the end with the break on: the idle state (and replies need it) */
+		lcr = u3[U16_LCR / 4] | U16_LCR_BREAK;
 		printf("LCR 0x%02x MSR 0x%02x: clearing the break\n", lcr, u3[U16_MSR / 4]);
 		u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
 		receive(0.2, 0);	/* let the modem wake up, show what it says */

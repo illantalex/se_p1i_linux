@@ -16,13 +16,15 @@
 #
 # ARG: u32:N, u16:N or u8:N (N decimal or 0x hex). IVibratorDevice (motor on the AB2010's
 # VIBR pin, no path from the SoC): 3 = mode (out u8), 4 u32:0|1|2 = set mode, 5 = stop,
-# 6 u32:N u8:X = vibrate (N < 0x10000, probably ms; X passed to the vibrator driver).
+# 6 u32:N u8:X = vibrate (N ms; with X = 1 the pattern repeats until method 5).
 #   opa.sh IVibratorDevice 6 u32:1000 u8:1
-#   opa.sh IVibratorDevice 5
+#   opa.sh IVibratorDevice 5        (at least 2 s after the start: a stop less than a second
+#                                    after it crashed the modem twice, as did 65535 ms, u8 0)
 # ILedControlDevice (the indicator LED, on the AB2010's LED pins: 1 = red, 2 = green):
-# 3 = number of LEDs (out u32: 2), 4 u8:LED = off, 5 u8:LED u32:ON u16:OFF = blink, ON ms on
-# and OFF ms off (OFF 0: a flash of ON ms now and then, not steady light).
-#   opa.sh ILedControlDevice 5 u8:2 u32:500 u16:500
+# 3 = number of LEDs (out u32: 2), 4 u8:LED = off, 5 u8:LED u32:PERIOD u16:ON = lit for ON ms
+# of every PERIOD ms (ON = PERIOD: steady; out of range, e.g. a period over ~3.5 s or ON 0,
+# gives the default ~150 ms flash every ~3.5 s). Both LEDs on at once is allowed.
+#   opa.sh ILedControlDevice 5 u8:2 u32:1000 u16:1000
 #   opa.sh ILedControlDevice 4 u8:2
 # IUsbChargingControl (IID 20563885..., what Symbian's BAPhandler StartCharging calls):
 # 3 = charging current (out u16, mA), 4 u16:N = set it. IIndicationDeviceManager

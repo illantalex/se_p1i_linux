@@ -54,6 +54,15 @@
  * ("P1i power key", for whatever runs on top), and held for 3 s it reboots, which ends up
  * in Symbian: the way out of Linux without a shell.
  *
+ * Indicator LED and vibrator (both on the modem's power chip) as LED class devices, through
+ * uleds: /sys/class/leds/red:indicator and green:indicator (brightness 1 = on, 0 = off; red
+ * and green together light orange; the timer trigger works for slow blinking, at most one
+ * modem call per LED every 0.5 s) and /sys/class/leds/vibrator (brightness 1 = vibrate until
+ * 0, but at least 2 s: an earlier stop crashed the modem). For a pulse, the transient
+ * trigger: echo transient > trigger; echo 1 > state; echo 300 > duration; echo 1 > activate
+ * (without "state" 1 it holds the vibrator off and then switches it on). They use the same
+ * opa.txt as the battery record.
+ *
  *   p1ibat [-f] [-r off|on]   the daemon. -f: stay in the foreground and print every
  *                             frame; -r: switch the radio off or on at start
  *   p1ibat radio off|on       ask the running daemon to switch the radio
@@ -62,6 +71,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/uinput.h>
+#include <linux/uleds.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -104,7 +114,21 @@
 #define NTYPES		16
 
 #define OPA_FILE	"/media/card/other/opa.txt"
-#define OPA_BATTERY_IID	"f7abbe03"
+#define OPA_LED_METHOD_OFF	4	/* ILedControlDevice: u8 LED */
+#define OPA_LED_METHOD_BLINK	5	/* u8 LED, u32 period ms, u16 on ms (on = period: steady) */
+#define OPA_VIB_METHOD_STOP	5	/* IVibratorDevice */
+#define OPA_VIB_METHOD_START	6	/* u32 ms (< 0x10000), u8 */
+#define LED_PERIOD_MS	1000	/* "on" = lit for the whole period; out-of-range values give */
+#define LED_ON_MS	1000	/* the default flash (~150 ms every ~3.5 s) instead */
+/*
+ * Only values seen working: 1000 ms with 1 (Symbian's calls had 1). With 1 the motor keeps
+ * going (the pattern repeats) until a stop. A stop a few seconds after the start worked;
+ * the two times one came less than a second after the start (and once 65535 ms with 0) the
+ * modem crashed (2026-10-25). So a stop never follows a start sooner than VIB_MIN_S.
+ */
+#define VIB_MS		1000
+#define VIB_ARG		1
+#define VIB_MIN_S	2.0
 #define OPA_INVOKE	8
 #define OPA_REPLY	9
 #define OPA_BATTERY_RECORD	7	/* IBatteryDevice method: the whole record */
@@ -128,6 +152,7 @@ static int seen[2][NTYPES];
 static unsigned long overruns;
 static int radio = -1;		/* -1 unknown, 0 off, 1 on (as confirmed by the modem) */
 static volatile sig_atomic_t radio_request = -1;
+static volatile sig_atomic_t quit;	/* SIGTERM/SIGINT: leave between sends, break on */
 static volatile uint32_t *u3, *gpio;
 static int uinput_fd = -1;
 static double power_down_at;	/* 0: power key not held */
@@ -145,7 +170,35 @@ static const struct {
 	{ "battery_percent", 40, 1 },
 };
 #define NFIELDS (sizeof(record_fields) / sizeof(record_fields[0]))
-static uint32_t opa_session, opa_stub, opa_reqid = 0x5b000000;
+/* The modem's objects p1ibat uses, from regprobe's scan: IID prefix, session, stub */
+enum { OBJ_BATTERY, OBJ_LED, OBJ_VIBRATOR, NOBJ };
+static struct {
+	const char *iid;
+	uint32_t session, stub;
+} objs[NOBJ] = {
+	{ "f7abbe03" },		/* IBatteryDevice */
+	{ "99eb8af7" },		/* ILedControlDevice */
+	{ "06007ab5" },		/* IVibratorDevice */
+};
+static uint32_t opa_reqid = 0x5b000000, cmd_reqid = 0x5d000000;
+
+/*
+ * LED class devices through uleds: the modem does the work, p1ibat passes brightness on.
+ * Calls are rate limited (the modem stopped answering once after a burst of calls): at most
+ * one per device every min_gap seconds, the latest state wins.
+ */
+static struct {
+	const char *name;
+	int obj, led;		/* LED number for ILedControlDevice */
+	double min_gap;
+	int fd, want, sent;
+	double sent_at;
+} leds[] = {
+	{ "red:indicator", OBJ_LED, 1, 0.5 },
+	{ "green:indicator", OBJ_LED, 2, 0.5 },
+	{ "vibrator", OBJ_VIBRATOR, 0, VIB_MIN_S },
+};
+#define NLEDS (sizeof(leds) / sizeof(leds[0]))
 static int opa_state;		/* 0 no opa.txt yet, 1 polling, -1 refused: stop */
 static int record_valid;
 static uint8_t record[OPA_RECORD_LEN];
@@ -376,7 +429,7 @@ static void receive_pending(void)
 /* Send one CAIF frame: wake the modem (clear the break, wait for CTS), send, sleep again */
 static void send_payload(const uint8_t *payload, int n)
 {
-	uint32_t lcr = u3[U16_LCR / 4];
+	uint32_t lcr = u3[U16_LCR / 4] | U16_LCR_BREAK;	/* idle: break on */
 	uint16_t fcs = fcs16(payload, n);
 	uint8_t frame[64];
 	double t;
@@ -405,7 +458,8 @@ static void send_payload(const uint8_t *payload, int n)
 }
 
 /*
- * Session and stub of the battery object from regprobe's scan; 0 if not (yet) there, -1 if
+ * Session and stub of the objects in objs[] from regprobe's scan (the first proxy with that
+ * IID: Symbian has several for some); 0 if not (yet) there, -1 if
  * the file is from an earlier Symbian boot. Its stub addresses are then meaningless, and
  * the modem dereferences them: a stale stub hung the modem (2026-10-25). The scan runs just
  * before the handover, so its file time (UTC, like ours) must be shortly before our boot.
@@ -417,7 +471,7 @@ static int load_opa(void)
 	struct timespec up;
 	struct stat st;
 	time_t boot;
-	int found = 0;
+	int found = 0, i;
 	FILE *f;
 
 	if (stat(OPA_FILE, &st) < 0)
@@ -433,13 +487,14 @@ static int load_opa(void)
 	f = fopen(OPA_FILE, "r");
 	if (!f)
 		return 0;
-	while (!found && fgets(line, sizeof(line), f))
-		if (sscanf(line, "%x %39s %x %x", &phys, iid, &session, &stub) == 4 &&
-		    !strncmp(iid, OPA_BATTERY_IID, strlen(OPA_BATTERY_IID))) {
-			opa_session = session;
-			opa_stub = stub;
-			found = 1;
-		}
+	while (fgets(line, sizeof(line), f))
+		if (sscanf(line, "%x %39s %x %x", &phys, iid, &session, &stub) == 4)
+			for (i = 0; i < NOBJ; i++)
+				if (!objs[i].stub && !strncmp(iid, objs[i].iid, strlen(objs[i].iid))) {
+					objs[i].session = session;
+					objs[i].stub = stub;
+					found = 1;
+				}
 	fclose(f);
 	return found;
 }
@@ -471,9 +526,13 @@ static void opa_poll(void)
 			return;
 		}
 		opa_state = 1;
-		kmsg("battery record: session 0x%x stub 0x%x from " OPA_FILE "\n",
-		     opa_session, opa_stub);
+		kmsg("modem objects from " OPA_FILE ": battery 0x%x/0x%x, LED 0x%x/0x%x,"
+		     " vibrator 0x%x/0x%x\n", objs[OBJ_BATTERY].session, objs[OBJ_BATTERY].stub,
+		     objs[OBJ_LED].session, objs[OBJ_LED].stub, objs[OBJ_VIBRATOR].session,
+		     objs[OBJ_VIBRATOR].stub);
 	}
+	if (!objs[OBJ_BATTERY].stub)
+		return;
 	next = now() + OPA_POLL_S;
 	/* Unanswered since the last poll: the reply was lost, ask again with a new request id */
 	if (sent_reqid == opa_reqid && now() - sent_at < OPA_TIMEOUT_S)
@@ -481,14 +540,95 @@ static void opa_poll(void)
 	if (sent_reqid == opa_reqid)
 		opa_reqid++;
 	put32(req + 2, OPA_INVOKE);
-	put32(req + 6, opa_session);
+	put32(req + 6, objs[OBJ_BATTERY].session);
 	put32(req + 10, opa_reqid);
-	put32(req + 14, opa_stub);
+	put32(req + 14, objs[OBJ_BATTERY].stub);
 	put32(req + 18, 0);
 	put32(req + 22, OPA_BATTERY_RECORD);
 	sent_reqid = opa_reqid;
 	sent_at = now();
 	send_payload(req, sizeof(req));
+}
+
+/* One call on a modem object, its reply ignored (it carries another request id) */
+static void opa_invoke(int obj, uint32_t method, const uint8_t *args, int nargs)
+{
+	uint8_t req[2 + 24 + 16] = { CAIF_CH_NOTIFY, 0 };
+
+	put32(req + 2, OPA_INVOKE);
+	put32(req + 6, objs[obj].session);
+	put32(req + 10, cmd_reqid++);
+	put32(req + 14, objs[obj].stub);
+	put32(req + 18, 0);
+	put32(req + 22, method);
+	memcpy(req + 26, args, nargs);
+	send_payload(req, 26 + nargs);
+}
+
+static void leds_setup(void)
+{
+	struct uleds_user_dev dev;
+	unsigned int i;
+
+	for (i = 0; i < NLEDS; i++) {
+		leds[i].fd = open("/dev/uleds", O_RDWR | O_NONBLOCK);
+		if (leds[i].fd < 0)
+			continue;
+		memset(&dev, 0, sizeof(dev));
+		strncpy(dev.name, leds[i].name, sizeof(dev.name) - 1);
+		dev.max_brightness = 1;
+		if (write(leds[i].fd, &dev, sizeof(dev)) != sizeof(dev)) {
+			close(leds[i].fd);
+			leds[i].fd = -1;
+		}
+	}
+}
+
+/* New brightness from sysfs (or a trigger) -> the modem, rate limited */
+static void leds_update(void)
+{
+	unsigned int i;
+	uint8_t a[8];
+	int v;
+
+	for (i = 0; i < NLEDS; i++) {
+		if (leds[i].fd < 0)
+			continue;
+		while (read(leds[i].fd, &v, sizeof(v)) == sizeof(v))
+			leds[i].want = v > 0;
+		if (opa_state != 1 || !objs[leds[i].obj].stub ||
+		    now() - leds[i].sent_at < leds[i].min_gap)
+			continue;
+		if (leds[i].want == leds[i].sent)
+			continue;
+		if (leds[i].obj == OBJ_VIBRATOR) {
+			if (leds[i].want) {
+				put32(a, VIB_MS);
+				a[4] = VIB_ARG;
+				opa_invoke(OBJ_VIBRATOR, OPA_VIB_METHOD_START, a, 5);
+			} else {
+				opa_invoke(OBJ_VIBRATOR, OPA_VIB_METHOD_STOP, a, 0);
+			}
+		} else {
+			a[0] = leds[i].led;
+			if (leds[i].want) {
+				put32(a + 1, LED_PERIOD_MS);
+				a[5] = LED_ON_MS & 0xff;
+				a[6] = LED_ON_MS >> 8;
+				opa_invoke(OBJ_LED, OPA_LED_METHOD_BLINK, a, 7);
+			} else {
+				opa_invoke(OBJ_LED, OPA_LED_METHOD_OFF, a, 1);
+			}
+		}
+		leds[i].sent = leds[i].want;
+		leds[i].sent_at = now();
+	}
+}
+
+static void on_quit(int sig)
+{
+	(void)sig;
+	quit = 1;
 }
 
 static void on_signal(int sig)
@@ -591,14 +731,30 @@ usage:
 		return 1;
 	}
 	power_key_setup();
+	leds_setup();
+	/*
+	 * Killed in the middle of a send, the break stayed off and the modem answered nothing
+	 * any more (2026-10-25): finish the send, then leave. And repair it if found that way.
+	 */
+	signal(SIGTERM, on_quit);
+	signal(SIGINT, on_quit);
+	if (!(u3[U16_LCR / 4] & U16_LCR_BREAK)) {
+		u3[U16_LCR / 4] |= U16_LCR_BREAK;
+		kmsg("UART3 break was off (a tool killed while sending?): set again\n");
+	}
 	signal(SIGUSR1, on_signal);
 	signal(SIGUSR2, on_signal);
 	write_status();
 
 	for (;;) {
+		if (quit) {
+			u3[U16_LCR / 4] |= U16_LCR_BREAK;
+			return 0;
+		}
 		receive_pending();
 		answer_modem();
 		opa_poll();
+		leds_update();
 
 		if (radio_request >= 0) {
 			uint8_t cmd[] = { 0, CAIF_CMD_RADIO_SET, radio_request };
