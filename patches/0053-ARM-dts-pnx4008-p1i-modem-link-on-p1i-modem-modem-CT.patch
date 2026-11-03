@@ -1,0 +1,89 @@
+From 8e71169e3beefa800bea90b5fc35f8c497805504 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 3 Nov 2026 21:52:30 +0100
+Subject: [PATCH 53/53] ARM: dts: pnx4008-p1i: modem link on p1i-modem, modem
+ CTS as an input event
+
+UART3 (verified on MIC line 7) goes to the new p1i-modem driver instead
+of 8250. The modem's CTS (GPI_05, verified on SIC2 line 27) becomes an
+interrupt-only gpio-keys device, so the battery daemon can sleep until
+the modem wants to send instead of polling it every 2 ms.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 41 +++++++++++++++++++++++++------
+ 1 file changed, 33 insertions(+), 8 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index a2559ae4d..eb962d48b 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -38,7 +38,7 @@ / {
+ 
+ 	aliases {
+ 		serial0 = &uart6;	/* -> ttyS0: console + shell (IrDA module pads, TX and RX) */
+-		serial1 = &uart5;	/* -> ttyS1: no longer wired (kept for a future modem) */
++		serial1 = &uart5;	/* -> ttyS1: no longer wired */
+ 	};
+ 
+ 	chosen {
+@@ -230,17 +230,21 @@ sic2: interrupt-controller@40010000 {
+ 		/*
+ 		 * Standard 16550-style UARTs, 32-bit registers on a 4-byte stride.
+ 		 * MIC lines are NOT the LPC32xx ones: the stub's THRE test put UART5 on line 9
+-		 * and UART6 on line 10, both level high (verified). UART3/4 at 7/8 assume the
+-		 * same shift and are unverified.
++		 * and UART6 on line 10, both level high (verified). UART3 on line 7 (verified:
++		 * its THRE interrupt shows in the MIC's raw status); UART4 at 8 is unverified.
++		 */
++
++		/*
++		 * UART3 = the modem link (CAIF serial to the DB2001, 115200 8N1 with Symbian's
++		 * clock divider: U3CLK X/Y = 19/134 of 13 MHz = 16 x 115200), used by p1ibat as
++		 * /dev/p1i-modem (drivers/misc/p1i-modem.c). Not the 8250 driver: it rewrites
++		 * line control and FIFOs and lifts the break (the link's idle state) at every
++		 * open and close, and the modem stopped taking frames after that (2026-11-03).
+ 		 */
+ 		uart3: serial@40080000 {
+-			compatible = "nxp,lpc3220-uart", "ns16550a";
++			compatible = "sonyericsson,p1i-modem-uart";
+ 			reg = <0x40080000 0x1000>;
+-			reg-shift = <2>;
+-			reg-io-width = <4>;
+ 			interrupts = <7 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&periph_clk>;
+-			status = "disabled";	/* in use by Symbian's side of the board */
+ 		};
+ 
+ 		uart4: serial@40088000 {
+@@ -580,6 +584,27 @@ jog-dial {
+ 			linux,codes = <KEY_UP KEY_DOWN>;
+ 		};
+ 
++		/*
++		 * The modem's CTS (GPI_05, active low) as an event, so that p1ibat need not poll
++		 * it: with the break on UART3's TX (the link's idle state) the modem pulls it low
++		 * when it has something to send, and waits for a short wake-up. GPI_05's
++		 * interrupt: SIC2 27 as on the LPC32xx, verified on the device (raw status
++		 * follows the pin). Interrupt only: one press per falling edge, released after
++		 * 5 ms.
++		 */
++		modem-cts {
++			compatible = "gpio-keys";
++			label = "P1i modem CTS";
++
++			modem-cts-key {
++				label = "modem CTS";
++				interrupt-parent = <&sic2>;
++				interrupts = <27 IRQ_TYPE_EDGE_FALLING>;
++				linux,code = <BTN_TRIGGER_HAPPY1>;
++				debounce-interval = <5>;
++			};
++		};
++
+ 		/*
+ 		 * PWM2 = BACKLIGHT_LEVEL, LPC32xx layout (drivers/pwm/pwm-lpc32xx.c), verified:
+ 		 * Symbian left 0x80000145 (enabled, reload 1, duty reg 0x45 = low 69/256) and
+-- 
+2.53.0
+

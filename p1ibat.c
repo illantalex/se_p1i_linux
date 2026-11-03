@@ -6,9 +6,9 @@
  * The DB2001 modem charges the battery and measures it. After the handover it is still in
  * CAIF mode on UART3 (0x40080000, 115200 8N1, set up by Symbian) and keeps sending OPA
  * notifications on CAIF channel 22 whenever a value changes. The battery level is one of
- * them: the percentage Symbian shows. This daemon reads UART3's receive FIFO through
- * /dev/mem, using the UART exactly as Symbian left it, decodes the frames and acts on the
- * level:
+ * them: the percentage Symbian shows. This daemon talks to the modem through /dev/p1i-modem
+ * (drivers/misc/p1i-modem.c: UART3 as Symbian set it up, interrupt driven), decodes the
+ * frames and acts on the level:
  *
  *   /run/p1i-battery      level=<percent or "unknown">, plus every notification value seen
  *                         (raw, hex)
@@ -16,9 +16,9 @@
  *   <= 1% for 60 s        poweroff (the batteries' own 0% is not empty yet)
  *   radio                 off or on on request; radio=on/off/unknown in the status file
  *
- * The modem only reports changes, so the level is unknown until the first report; the last
- * report before the handover is often still waiting in the FIFO. Only one reader of UART3
- * can work at a time: stop p1ibat before using uartspy.
+ * The modem only reports changes, so the level is unknown until the first report. Only one
+ * user of UART3 can work at a time: stop p1ibat before using uartspy or p1imodem (they use
+ * the registers through /dev/mem while the device is closed).
  *
  * CAIF serial frame: length (16-bit LE, payload + 2) | payload | FCS-16 (PPP) of the payload.
  * Payload on channel 22: 0x16, 0x00, then 32-bit LE words: 12 (header size), message id,
@@ -32,8 +32,11 @@
  * modem; clearing it wakes the modem, which answers by pulling CTS (GPI_05, active low)
  * low. The other way round, the modem pulls CTS low while the break is on when it has
  * something to send, and waits for a short wake-up (break off for 20 ms): without one,
- * control replies and some notifications stay queued in the modem. RTS to the modem
- * (GPO_17) is not needed.
+ * control replies and some notifications stay queued in the modem. The kernel reports
+ * CTS's falling edges on an input device ("P1i modem CTS", gpio-keys), so p1ibat sleeps in
+ * poll() until the modem, a timer or an LED needs it; its level is read from the GPIO
+ * register (/dev/mem). RTS to the modem (GPO_17) is not needed. The break is set and cleared
+ * with TIOCSBRK / TIOCCBRK; closing the device leaves it on.
  *
  * Measurements: once a minute, the modem's battery object (OPA IBatteryDevice, method 7) is
  * asked for its record, on the session Symbian's BServer opened (session and stub address
@@ -72,6 +75,7 @@
 #include <fcntl.h>
 #include <linux/uinput.h>
 #include <linux/uleds.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -84,15 +88,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define UART3_PHYS	0x40080000
-#define U16_RBR		0x00
-#define U16_THR		0x00
-#define U16_LCR		0x0c
-#define U16_LSR		0x14
-#define U16_LCR_BREAK	(1 << 6)
-#define U16_LSR_DR	(1 << 0)
-#define U16_LSR_OE	(1 << 1)
-#define U16_LSR_THRE	(1 << 5)
+#define MODEM_DEV	"/dev/p1i-modem"
+#define MODEM_OVERRUNS	"/sys/class/misc/p1i-modem/overruns"
+#define CTS_INPUT_NAME	"P1i modem CTS"
 
 #define GPIO_PHYS	0x40028000
 #define P3_INP_STATE	0x00
@@ -138,7 +136,10 @@
 #define OPA_TIMEOUT_S	30	/* no reply by the next poll (lost in an overrun): send again */
 
 #define STATUS_FILE	"/run/p1i-battery"
-#define POLL_US		2000	/* the 64-byte FIFO fills in 5.5 ms at 115200 */
+#define IDLE_POLL_MS	1000	/* nothing pending: wake up once a second */
+#define SEND_AWAKE_S	0.05	/* line awake after a frame */
+#define SEND_GAP_S	0.3	/* between the end of one frame and the next */
+#define BUSY_POLL_MS	100	/* power key held, or an LED call held back */
 #define EMPTY_LEVEL	1
 #define EMPTY_SECONDS	60
 
@@ -153,7 +154,8 @@ static unsigned long overruns;
 static int radio = -1;		/* -1 unknown, 0 off, 1 on (as confirmed by the modem) */
 static volatile sig_atomic_t radio_request = -1;
 static volatile sig_atomic_t quit;	/* SIGTERM/SIGINT: leave between sends, break on */
-static volatile uint32_t *u3, *gpio;
+static volatile uint32_t *gpio;	/* CTS */
+static int tty = -1, cts_fd = -1;
 static int uinput_fd = -1;
 static double power_down_at;	/* 0: power key not held */
 
@@ -180,6 +182,10 @@ static struct {
 	{ "99eb8af7" },		/* ILedControlDevice */
 	{ "06007ab5" },		/* IVibratorDevice */
 };
+/*
+ * Request ids: the modem echoes them in the reply. Every run starts with its own block
+ * (process id), so a late reply to the run before is never taken for one of ours.
+ */
 static uint32_t opa_reqid = 0x5b000000, cmd_reqid = 0x5d000000;
 
 /*
@@ -256,6 +262,15 @@ static void write_status(void)
 			    (int32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24);
 
 		fprintf(f, "%s=%ld\n", record_fields[t].name, (long)v);
+	}
+	{
+		FILE *o = fopen(MODEM_OVERRUNS, "r");
+
+		if (o) {
+			if (fscanf(o, "%lu", &overruns) != 1)
+				overruns = 0;
+			fclose(o);
+		}
 	}
 	fprintf(f, "overruns=%lu\n", overruns);
 	if (fclose(f) == 0)
@@ -417,23 +432,47 @@ static void handle_byte(uint8_t c)
 
 static void receive_pending(void)
 {
-	uint32_t lsr;
+	uint8_t buf[256];
+	ssize_t n, i;
 
-	while ((lsr = u3[U16_LSR / 4]) & U16_LSR_DR) {
-		if (lsr & U16_LSR_OE)
-			overruns++;
-		handle_byte(u3[U16_RBR / 4]);
+	while ((n = read(tty, buf, sizeof(buf))) > 0)
+		for (i = 0; i < n; i++)
+			handle_byte(buf[i]);
+}
+
+/* Receive for a while (the modem answers while the break is off) */
+static void receive_for(double seconds)
+{
+	struct pollfd pfd = { .fd = tty, .events = POLLIN };
+	double end = now() + seconds, left;
+
+	while ((left = end - now()) > 0) {
+		poll(&pfd, 1, (int)(left * 1000) + 1);
+		receive_pending();
 	}
 }
 
-/* Send one CAIF frame: wake the modem (clear the break, wait for CTS), send, sleep again */
+static int cts_low(void)
+{
+	return !(gpio[P3_INP_STATE / 4] & GPI_05_CTS);
+}
+
+/*
+ * Send one CAIF frame: wake the modem (clear the break, wait for CTS), send, listen with the
+ * line awake for SEND_AWAKE_S (as the old polling code did), sleep again. Frames come at
+ * least SEND_GAP_S apart: a battery request and a radio command sent a few ms apart (a
+ * restarted p1ibat does both at once) got the first answered and then hung the modem's
+ * frame handling until a Symbian reboot, three times (2026-11-03).
+ */
 static void send_payload(const uint8_t *payload, int n)
 {
-	uint32_t lcr = u3[U16_LCR / 4] | U16_LCR_BREAK;	/* idle: break on */
+	static double last_sent;
 	uint16_t fcs = fcs16(payload, n);
 	uint8_t frame[64];
 	double t;
-	int i;
+
+	if (now() - last_sent < SEND_GAP_S)
+		receive_for(SEND_GAP_S - (now() - last_sent));
 
 	frame[0] = (n + 2) & 0xff;
 	frame[1] = (n + 2) >> 8;
@@ -441,20 +480,17 @@ static void send_payload(const uint8_t *payload, int n)
 	frame[n + 2] = fcs & 0xff;
 	frame[n + 3] = fcs >> 8;
 
-	u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
-	for (t = now(); gpio[P3_INP_STATE / 4] & GPI_05_CTS && now() - t < 0.5; )
-		receive_pending();
-	if (gpio[P3_INP_STATE / 4] & GPI_05_CTS)
+	ioctl(tty, TIOCCBRK);
+	for (t = now(); !cts_low() && now() - t < 0.5; )
+		receive_for(0.001);
+	if (!cts_low())
 		kmsg("modem did not wake up (no CTS), sending anyway\n");
-	for (i = 0; i < n + 4; i++) {
-		while (!(u3[U16_LSR / 4] & U16_LSR_THRE))
-			receive_pending();
-		u3[U16_THR / 4] = frame[i];
-	}
-	/* Let the last bytes leave the FIFO before the break holds the line low again */
-	for (t = now(); now() - t < 0.05; )
-		receive_pending();
-	u3[U16_LCR / 4] = lcr;
+	/* Returns once the last stop bit is out: the break would cut it off */
+	if (write(tty, frame, n + 4) != n + 4)
+		kmsg("write to " MODEM_DEV " failed\n");
+	receive_for(SEND_AWAKE_S);
+	ioctl(tty, TIOCSBRK);
+	last_sent = now();
 }
 
 /*
@@ -678,23 +714,75 @@ static int radio_command(const char *arg)
 static void answer_modem(void)
 {
 	static double woke;
-	uint32_t lcr = u3[U16_LCR / 4];
-	double t;
 
-	if (!(lcr & U16_LCR_BREAK) || gpio[P3_INP_STATE / 4] & GPI_05_CTS || now() - woke < 0.5)
+	if (!cts_low() || now() - woke < 0.5)
 		return;
 	woke = now();
-	u3[U16_LCR / 4] = lcr & ~U16_LCR_BREAK;
-	for (t = now(); now() - t < 0.02; )
-		receive_pending();
-	u3[U16_LCR / 4] = lcr;
+	ioctl(tty, TIOCCBRK);
+	receive_for(0.02);
+	ioctl(tty, TIOCSBRK);
+}
+
+/* The modem's line, as Symbian set it up; the break on (its idle state) */
+static int open_modem(void)
+{
+	tty = open(MODEM_DEV, O_RDWR | O_NONBLOCK);
+	if (tty < 0)
+		return -1;
+	return ioctl(tty, TIOCSBRK);
+}
+
+/* The CTS input device, found by name (event numbers depend on probe order) */
+static void open_cts(void)
+{
+	DIR *d = opendir("/dev/input");
+	struct dirent *de;
+
+	while (d && (de = readdir(d))) {
+		char path[300], name[64] = "";
+		int fd;
+
+		if (strncmp(de->d_name, "event", 5))
+			continue;
+		snprintf(path, sizeof(path), "/dev/input/%s", de->d_name);
+		fd = open(path, O_RDONLY | O_NONBLOCK);
+		if (fd < 0)
+			continue;
+		if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+		    !strcmp(name, CTS_INPUT_NAME)) {
+			cts_fd = fd;
+			break;
+		}
+		close(fd);
+	}
+	if (d)
+		closedir(d);
+	if (cts_fd < 0)
+		kmsg("no \"" CTS_INPUT_NAME "\" input device: checking CTS once a second\n");
+}
+
+/* Sleep until the modem, the CTS line or an LED has something, or until timeout_ms */
+static void wait_events(int timeout_ms)
+{
+	struct pollfd pfd[2 + NLEDS];
+	struct input_event ev;
+	unsigned int i, n = 0;
+
+	pfd[n++] = (struct pollfd){ .fd = tty, .events = POLLIN };
+	pfd[n++] = (struct pollfd){ .fd = cts_fd, .events = POLLIN };
+	for (i = 0; i < NLEDS; i++)
+		pfd[n++] = (struct pollfd){ .fd = leds[i].fd, .events = POLLIN };
+	poll(pfd, n, timeout_ms);
+	/* Only the wake-up matters: the line's level is read when acting on it */
+	while (cts_fd >= 0 && read(cts_fd, &ev, sizeof(ev)) == sizeof(ev))
+		;
 }
 
 int main(int argc, char **argv)
 {
 	unsigned int warned = 0;
 	double empty_since = 0, status_at = 0;
-	int fd, opt, last_level = -2;
+	int fd, opt, busy, last_level = -2;
 	unsigned int i;
 
 	if (argc == 3 && !strcmp(argv[1], "radio"))
@@ -720,35 +808,37 @@ usage:
 		perror("/dev/mem");
 		return 1;
 	}
-	u3 = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, UART3_PHYS);
-	gpio = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_PHYS);
-	if (u3 == MAP_FAILED || gpio == MAP_FAILED) {
+	gpio = mmap(NULL, 0x1000, PROT_READ, MAP_SHARED, fd, GPIO_PHYS);
+	if (gpio == MAP_FAILED) {
 		perror("mmap");
 		return 1;
 	}
+	if (open_modem() < 0) {
+		perror(MODEM_DEV);
+		return 1;
+	}
+	opa_reqid |= (getpid() & 0xfff) << 12;
+	cmd_reqid |= (getpid() & 0xfff) << 12;
 	if (!verbose && daemon(0, 0) < 0) {
 		perror("daemon");
 		return 1;
 	}
 	power_key_setup();
 	leds_setup();
+	open_cts();
 	/*
 	 * Killed in the middle of a send, the break stayed off and the modem answered nothing
-	 * any more (2026-10-25): finish the send, then leave. And repair it if found that way.
+	 * any more (2026-10-25): finish the send, then leave with the break on.
 	 */
 	signal(SIGTERM, on_quit);
 	signal(SIGINT, on_quit);
-	if (!(u3[U16_LCR / 4] & U16_LCR_BREAK)) {
-		u3[U16_LCR / 4] |= U16_LCR_BREAK;
-		kmsg("UART3 break was off (a tool killed while sending?): set again\n");
-	}
 	signal(SIGUSR1, on_signal);
 	signal(SIGUSR2, on_signal);
 	write_status();
 
 	for (;;) {
 		if (quit) {
-			u3[U16_LCR / 4] |= U16_LCR_BREAK;
+			close(tty);	/* leaves the break on */
 			return 0;
 		}
 		receive_pending();
@@ -807,6 +897,10 @@ usage:
 			kmsg("poweroff failed\n");
 			empty_since = 0;
 		}
-		usleep(POLL_US);
+		busy = power_down_at != 0;
+		for (i = 0; i < NLEDS; i++)
+			if (leds[i].fd >= 0 && leds[i].want != leds[i].sent)
+				busy = 1;
+		wait_events(busy ? BUSY_POLL_MS : IDLE_POLL_MS);
 	}
 }

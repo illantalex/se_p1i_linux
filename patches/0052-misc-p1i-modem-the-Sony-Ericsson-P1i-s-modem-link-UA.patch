@@ -1,0 +1,383 @@
+From f17a6a9fe34546796abcc3e74ca836170b7122c4 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 3 Nov 2026 21:52:30 +0100
+Subject: [PATCH 52/53] misc: p1i-modem: the Sony Ericsson P1i's modem link
+ (UART3)
+
+The P1i's DB2001 modem talks CAIF serial on UART3, which Symbian sets
+up (115200 8N1, FIFOs, clock divider) and keeps a break on while idle.
+Under the 8250 driver the modem stopped taking frames, and two of four
+fresh boots froze when the port was first opened: 8250 rewrites line
+control and FIFOs and lifts the break on every open and close.
+
+This driver uses the UART as the boot firmware left it: no register
+writes at probe; open enables the receive interrupts, read/poll take
+the received bytes from a buffer, write returns once the last stop bit
+is out, TIOCSBRK/TIOCCBRK set and clear the break, and release leaves
+the break on. Receive overruns are counted in sysfs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/Kconfig     |   9 ++
+ drivers/misc/Makefile    |   1 +
+ drivers/misc/p1i-modem.c | 319 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 329 insertions(+)
+ create mode 100644 drivers/misc/p1i-modem.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 358ad56f6..fc58af363 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -496,6 +496,15 @@ config VCPU_STALL_DETECTOR
+ 
+ 	  If you do not intend to run this kernel as a guest, say N.
+ 
++config P1I_MODEM
++	tristate "Sony Ericsson P1i modem link (UART3)"
++	depends on OF && HAS_IOMEM
++	help
++	  The P1i's link to its DB2001 modem: UART3 as /dev/p1i-modem,
++	  interrupt driven, used exactly as the boot firmware (Symbian) set
++	  it up. Only the break is changed, on request (ioctl TIOCSBRK and
++	  TIOCCBRK).
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index ac9b3e757..045f349f3 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -62,3 +62,4 @@ obj-$(CONFIG_HI6421V600_IRQ)	+= hi6421v600-irq.o
+ obj-$(CONFIG_OPEN_DICE)		+= open-dice.o
+ obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
+ obj-$(CONFIG_VCPU_STALL_DETECTOR)	+= vcpu_stall_detector.o
++obj-$(CONFIG_P1I_MODEM)		+= p1i-modem.o
+diff --git a/drivers/misc/p1i-modem.c b/drivers/misc/p1i-modem.c
+new file mode 100644
+index 000000000..ec9a2abcb
+--- /dev/null
++++ b/drivers/misc/p1i-modem.c
+@@ -0,0 +1,319 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * The Sony Ericsson P1i's modem link: UART3, CAIF serial to the DB2001 modem, as /dev/p1i-modem.
++ *
++ * Symbian sets the UART up (115200 8N1, FIFOs, its clock divider) and keeps a break on the
++ * TX line while it does not talk to the modem: the link's idle state. Lifting the break
++ * wakes the modem. The generic 8250 driver rewrites the line control and FIFO registers and
++ * lifts the break whenever the port is opened or closed; with it, the modem stopped
++ * accepting frames (2026-11-03). This driver uses the UART as Symbian left it:
++ *
++ *   probe     maps the registers, touches none
++ *   open      receive interrupts on (IER: data available + line status); bytes already in
++ *             the FIFO are kept
++ *   read      received bytes (blocking or not, poll() works)
++ *   write     the bytes go out through the FIFO; returns once the last stop bit has left
++ *             (the break must not cut a frame off)
++ *   ioctl     TIOCSBRK / TIOCCBRK: break on / off; nothing else changes line control
++ *   release   receive interrupts off, break on
++ *
++ * Receive overruns (in the UART or in the driver's buffer) are counted in sysfs: overruns.
++ * One user at a time.
++ */
++
++#include <linux/delay.h>
++#include <linux/fs.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/kfifo.h>
++#include <linux/miscdevice.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/poll.h>
++#include <linux/serial_reg.h>
++#include <linux/termios.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++/* 16550 registers on a 4-byte stride */
++#define P1I_MODEM_REG(r)	((r) << 2)
++#define P1I_MODEM_RX_BUF	4096
++#define P1I_MODEM_TX_MAX	256
++
++struct p1i_modem {
++	void __iomem *base;
++	int irq;
++	spinlock_t lock;		/* registers and the receive buffer */
++	DECLARE_KFIFO(rx, u8, P1I_MODEM_RX_BUF);
++	wait_queue_head_t wait;
++	struct mutex tx_lock;
++	unsigned long open;
++	unsigned long overruns;
++	struct miscdevice misc;
++};
++
++static u32 p1i_modem_in(struct p1i_modem *m, int reg)
++{
++	return readl(m->base + P1I_MODEM_REG(reg));
++}
++
++static void p1i_modem_out(struct p1i_modem *m, int reg, u32 val)
++{
++	writel(val, m->base + P1I_MODEM_REG(reg));
++}
++
++static void p1i_modem_set_break(struct p1i_modem *m, bool on)
++{
++	unsigned long flags;
++	u32 lcr;
++
++	spin_lock_irqsave(&m->lock, flags);
++	lcr = p1i_modem_in(m, UART_LCR);
++	if (on)
++		lcr |= UART_LCR_SBC;
++	else
++		lcr &= ~UART_LCR_SBC;
++	p1i_modem_out(m, UART_LCR, lcr);
++	spin_unlock_irqrestore(&m->lock, flags);
++}
++
++static irqreturn_t p1i_modem_irq(int irq, void *data)
++{
++	struct p1i_modem *m = data;
++	irqreturn_t ret = IRQ_NONE;
++	int rounds = 64;	/* a condition that does not clear must not hold the CPU */
++	u32 lsr;
++	u8 c;
++
++	spin_lock(&m->lock);
++	while (!(p1i_modem_in(m, UART_IIR) & UART_IIR_NO_INT) && rounds--) {
++		ret = IRQ_HANDLED;
++		lsr = p1i_modem_in(m, UART_LSR);
++		if (lsr & UART_LSR_OE)
++			m->overruns++;
++		if (!(lsr & UART_LSR_DR)) {
++			/*
++			 * A character timeout with an empty FIFO (seen on this UART after the
++			 * boot firmware) only goes away with a read.
++			 */
++			p1i_modem_in(m, UART_RX);
++			continue;
++		}
++		do {
++			c = p1i_modem_in(m, UART_RX);
++			if (!kfifo_put(&m->rx, c))
++				m->overruns++;
++		} while ((lsr = p1i_modem_in(m, UART_LSR)) & UART_LSR_DR);
++	}
++	spin_unlock(&m->lock);
++
++	if (ret == IRQ_HANDLED)
++		wake_up_interruptible(&m->wait);
++	return ret;
++}
++
++static int p1i_modem_open(struct inode *inode, struct file *file)
++{
++	struct p1i_modem *m = container_of(file->private_data, struct p1i_modem, misc);
++	unsigned long flags;
++	int ret;
++
++	if (test_and_set_bit(0, &m->open))
++		return -EBUSY;
++	file->private_data = m;
++	kfifo_reset(&m->rx);
++
++	ret = request_irq(m->irq, p1i_modem_irq, 0, "p1i-modem", m);
++	if (ret) {
++		clear_bit(0, &m->open);
++		return ret;
++	}
++	spin_lock_irqsave(&m->lock, flags);
++	p1i_modem_out(m, UART_IER, UART_IER_RDI | UART_IER_RLSI);
++	spin_unlock_irqrestore(&m->lock, flags);
++	/* Bytes that came before the interrupt was there: collect them now */
++	local_irq_save(flags);
++	p1i_modem_irq(m->irq, m);
++	local_irq_restore(flags);
++	return 0;
++}
++
++static int p1i_modem_release(struct inode *inode, struct file *file)
++{
++	struct p1i_modem *m = file->private_data;
++	unsigned long flags;
++
++	spin_lock_irqsave(&m->lock, flags);
++	p1i_modem_out(m, UART_IER, 0);
++	spin_unlock_irqrestore(&m->lock, flags);
++	free_irq(m->irq, m);
++	p1i_modem_set_break(m, true);
++	clear_bit(0, &m->open);
++	return 0;
++}
++
++static ssize_t p1i_modem_read(struct file *file, char __user *buf, size_t count,
++			      loff_t *ppos)
++{
++	struct p1i_modem *m = file->private_data;
++	u8 tmp[256];
++	unsigned long flags;
++	unsigned int n;
++	int ret;
++
++	for (;;) {
++		spin_lock_irqsave(&m->lock, flags);
++		n = kfifo_out(&m->rx, tmp, min(count, sizeof(tmp)));
++		spin_unlock_irqrestore(&m->lock, flags);
++		if (n)
++			break;
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		ret = wait_event_interruptible(m->wait, !kfifo_is_empty(&m->rx));
++		if (ret)
++			return ret;
++	}
++	if (copy_to_user(buf, tmp, n))
++		return -EFAULT;
++	return n;
++}
++
++static ssize_t p1i_modem_write(struct file *file, const char __user *buf, size_t count,
++			       loff_t *ppos)
++{
++	struct p1i_modem *m = file->private_data;
++	u8 tmp[P1I_MODEM_TX_MAX];
++	size_t i;
++	u32 lsr;
++	int ret;
++
++	count = min_t(size_t, count, sizeof(tmp));
++	if (copy_from_user(tmp, buf, count))
++		return -EFAULT;
++
++	mutex_lock(&m->tx_lock);
++	for (i = 0; i < count; i++) {
++		/* THRE: the transmit FIFO is empty, 32 bytes may follow without a check */
++		if (i % 32 == 0) {
++			ret = readl_poll_timeout(m->base + P1I_MODEM_REG(UART_LSR), lsr,
++						 lsr & UART_LSR_THRE, 100, 20000);
++			if (ret)
++				goto out;
++		}
++		p1i_modem_out(m, UART_TX, tmp[i]);
++	}
++	/* TEMT: the last stop bit is out */
++	ret = readl_poll_timeout(m->base + P1I_MODEM_REG(UART_LSR), lsr,
++				 lsr & UART_LSR_TEMT, 100, 20000);
++out:
++	mutex_unlock(&m->tx_lock);
++	return ret ? ret : count;
++}
++
++static __poll_t p1i_modem_poll(struct file *file, poll_table *wait)
++{
++	struct p1i_modem *m = file->private_data;
++
++	poll_wait(file, &m->wait, wait);
++	return (kfifo_is_empty(&m->rx) ? 0 : EPOLLIN | EPOLLRDNORM) | EPOLLOUT | EPOLLWRNORM;
++}
++
++static long p1i_modem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct p1i_modem *m = file->private_data;
++
++	switch (cmd) {
++	case TIOCSBRK:
++		p1i_modem_set_break(m, true);
++		return 0;
++	case TIOCCBRK:
++		p1i_modem_set_break(m, false);
++		return 0;
++	default:
++		return -ENOTTY;
++	}
++}
++
++static const struct file_operations p1i_modem_fops = {
++	.owner		= THIS_MODULE,
++	.open		= p1i_modem_open,
++	.release	= p1i_modem_release,
++	.read		= p1i_modem_read,
++	.write		= p1i_modem_write,
++	.poll		= p1i_modem_poll,
++	.unlocked_ioctl	= p1i_modem_ioctl,
++	.llseek		= noop_llseek,
++};
++
++static ssize_t overruns_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	/* misc devices carry their struct miscdevice as driver data */
++	struct p1i_modem *m = container_of(dev_get_drvdata(dev), struct p1i_modem, misc);
++
++	return sysfs_emit(buf, "%lu\n", m->overruns);
++}
++static DEVICE_ATTR_RO(overruns);
++
++static struct attribute *p1i_modem_attrs[] = {
++	&dev_attr_overruns.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(p1i_modem);
++
++static int p1i_modem_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct p1i_modem *m;
++
++	m = devm_kzalloc(dev, sizeof(*m), GFP_KERNEL);
++	if (!m)
++		return -ENOMEM;
++	m->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(m->base))
++		return PTR_ERR(m->base);
++	m->irq = platform_get_irq(pdev, 0);
++	if (m->irq < 0)
++		return m->irq;
++
++	spin_lock_init(&m->lock);
++	INIT_KFIFO(m->rx);
++	init_waitqueue_head(&m->wait);
++	mutex_init(&m->tx_lock);
++
++	m->misc.minor = MISC_DYNAMIC_MINOR;
++	m->misc.name = "p1i-modem";
++	m->misc.fops = &p1i_modem_fops;
++	m->misc.parent = dev;
++	m->misc.groups = p1i_modem_groups;
++	platform_set_drvdata(pdev, m);
++	return misc_register(&m->misc);
++}
++
++static int p1i_modem_remove(struct platform_device *pdev)
++{
++	struct p1i_modem *m = platform_get_drvdata(pdev);
++
++	misc_deregister(&m->misc);
++	return 0;
++}
++
++static const struct of_device_id p1i_modem_of_match[] = {
++	{ .compatible = "sonyericsson,p1i-modem-uart" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, p1i_modem_of_match);
++
++static struct platform_driver p1i_modem_driver = {
++	.probe = p1i_modem_probe,
++	.remove = p1i_modem_remove,
++	.driver = {
++		.name = "p1i-modem",
++		.of_match_table = p1i_modem_of_match,
++	},
++};
++module_platform_driver(p1i_modem_driver);
++
++MODULE_DESCRIPTION("Sony Ericsson P1i modem link (UART3, as Symbian set it up)");
++MODULE_LICENSE("GPL");
+-- 
+2.53.0
+
