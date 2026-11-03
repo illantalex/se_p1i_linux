@@ -1,0 +1,181 @@
+From 50be42e8e5b073e2c0fccb544fe47e40908a46d7 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 3 Nov 2026 23:21:34 +0100
+Subject: [PATCH 54/55] misc: pnx4008-idle: wait for interrupts in direct run
+ mode
+
+On the PNX4008 the ARM runs at 208 MHz and HCLK (bus, SDRAM) at
+104 MHz from the HCLK PLL, and waiting for an interrupt only stops the
+ARM core's clock. Its boot firmware (Symbian's PowerControlExtension)
+switches to direct run mode before waiting: ARM and HCLK from SYSCLK
+(13 MHz), PERIPH_CLK unchanged, the PLL kept running, so the way back
+is short.
+
+Do the same in arm_pm_idle: drain the write buffer, wait for the SDRAM
+controller to be idle, set the refresh period for 13 MHz, clear
+PWR_CTRL bit 2, wait for the interrupt, then switch back and restore
+the refresh period. Measured on a Sony Ericsson P1i (modem's battery
+current, backlight off): about 71 mA instead of 91 mA while idle.
+
+The switch can be turned off at runtime ("enable" parameter);
+"entries" counts the idle periods spent in direct run.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/Kconfig        |   8 +++
+ drivers/misc/Makefile       |   1 +
+ drivers/misc/pnx4008-idle.c | 114 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 123 insertions(+)
+ create mode 100644 drivers/misc/pnx4008-idle.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index fc58af363..fe3685f97 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -496,6 +496,14 @@ config VCPU_STALL_DETECTOR
+ 
+ 	  If you do not intend to run this kernel as a guest, say N.
+ 
++config PNX4008_IDLE
++	bool "PNX4008: wait for interrupts in direct run mode"
++	depends on ARM && OF && HAS_IOMEM
++	help
++	  Lets the PNX4008 (Sony Ericsson P1i) wait for interrupts with ARM
++	  and bus clocked at 13 MHz instead of 208/104 MHz, as its boot
++	  firmware (Symbian) does: less power while idle.
++
+ config P1I_MODEM
+ 	tristate "Sony Ericsson P1i modem link (UART3)"
+ 	depends on OF && HAS_IOMEM
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 045f349f3..bbbf19d8a 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -63,3 +63,4 @@ obj-$(CONFIG_OPEN_DICE)		+= open-dice.o
+ obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
+ obj-$(CONFIG_VCPU_STALL_DETECTOR)	+= vcpu_stall_detector.o
+ obj-$(CONFIG_P1I_MODEM)		+= p1i-modem.o
++obj-$(CONFIG_PNX4008_IDLE)	+= pnx4008-idle.o
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+new file mode 100644
+index 000000000..fe7ef23eb
+--- /dev/null
++++ b/drivers/misc/pnx4008-idle.c
+@@ -0,0 +1,114 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * PNX4008 idle: wait for interrupts in direct run mode (Sony Ericsson P1i).
++ *
++ * In normal run mode the ARM runs at 208 MHz and HCLK (bus, SDRAM) at 104 MHz from the HCLK
++ * PLL; waiting for an interrupt only stops the ARM core's clock. In direct run mode ARM and
++ * HCLK run from SYSCLK (13 MHz), PERIPH_CLK stays at 13 MHz (the UARTs keep their rates),
++ * and the PLL keeps running, so going back takes a few cycles. Symbian's idle code
++ * (PowerControlExtension.dll) does the same before going further (STOP mode):
++ *
++ *   drain the write buffer, wait until the SDRAM controller is idle (EMC status bit 0),
++ *   SDRAM refresh period 6 x 16 HCLK cycles (7.4 us at 13 MHz), PWR_CTRL bit 2 clear
++ *   (direct run); wait for an interrupt; PWR_CTRL bit 2 set (normal run), the run mode's
++ *   refresh period back.
++ *
++ * A faster refresh at 104 MHz is harmless, so the refresh changes first on the way down and
++ * last on the way up. The switch can be turned off at runtime (parameter "enable"), for
++ * comparing; "entries" counts the idle periods spent in direct run.
++ */
++
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <asm/proc-fns.h>
++#include <asm/system_misc.h>
++
++#define PWR_CTRL_NORMAL_RUN	BIT(2)
++#define HCLKPLL_LOCK		BIT(0)
++#define EMC_STATUS		0x04
++#define EMC_STATUS_BUSY		BIT(0)
++#define EMC_REFRESH		0x24
++#define EMC_REFRESH_13MHZ	6
++
++static void __iomem *pwr_ctrl, *hclkpll, *emc;
++static u32 refresh_run;
++
++static bool enable = true;
++module_param(enable, bool, 0644);
++MODULE_PARM_DESC(enable, "wait for interrupts in direct run mode (13 MHz)");
++
++static unsigned long entries;
++module_param(entries, ulong, 0444);
++MODULE_PARM_DESC(entries, "idle periods spent in direct run mode");
++
++static void pnx4008_idle(void)
++{
++	u32 pwr = readl_relaxed(pwr_ctrl), v;
++
++	/* Normal run mode from a locked PLL, or leave the clocks alone */
++	if (!READ_ONCE(enable) || !(pwr & PWR_CTRL_NORMAL_RUN) ||
++	    !(readl_relaxed(hclkpll) & HCLKPLL_LOCK)) {
++		cpu_do_idle();
++		return;
++	}
++
++	/* Drain the write buffer (ARM926; dsb() is only a compiler barrier on ARMv5) */
++	asm volatile("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) : "memory");
++	if (readl_relaxed_poll_timeout_atomic(emc + EMC_STATUS, v, !(v & EMC_STATUS_BUSY),
++					      0, 100)) {
++		cpu_do_idle();
++		return;
++	}
++	writel_relaxed(EMC_REFRESH_13MHZ, emc + EMC_REFRESH);
++	writel(pwr & ~PWR_CTRL_NORMAL_RUN, pwr_ctrl);
++
++	cpu_do_idle();
++
++	writel(pwr, pwr_ctrl);
++	writel(refresh_run, emc + EMC_REFRESH);
++	entries++;
++}
++
++static int pnx4008_idle_probe(struct platform_device *pdev)
++{
++	pwr_ctrl = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(pwr_ctrl))
++		return PTR_ERR(pwr_ctrl);
++	hclkpll = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(hclkpll))
++		return PTR_ERR(hclkpll);
++	emc = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(emc))
++		return PTR_ERR(emc);
++
++	/* The boot firmware's value for normal run mode */
++	refresh_run = readl(emc + EMC_REFRESH);
++	if (!(readl(pwr_ctrl) & PWR_CTRL_NORMAL_RUN) || refresh_run <= EMC_REFRESH_13MHZ) {
++		dev_err(&pdev->dev, "not in normal run mode (PWR_CTRL %#x, refresh %u)\n",
++			readl(pwr_ctrl), refresh_run);
++		return -ENODEV;
++	}
++
++	arm_pm_idle = pnx4008_idle;
++	dev_info(&pdev->dev, "idle in direct run mode (SDRAM refresh %u, at 13 MHz %u)\n",
++		 refresh_run, EMC_REFRESH_13MHZ);
++	return 0;
++}
++
++static const struct of_device_id pnx4008_idle_of_match[] = {
++	{ .compatible = "nxp,pnx4008-idle" },
++	{ }
++};
++
++static struct platform_driver pnx4008_idle_driver = {
++	.probe = pnx4008_idle_probe,
++	.driver = {
++		.name = "pnx4008-idle",
++		.of_match_table = pnx4008_idle_of_match,
++		.suppress_bind_attrs = true,	/* arm_pm_idle stays set */
++	},
++};
++builtin_platform_driver(pnx4008_idle_driver);
+-- 
+2.53.0
+

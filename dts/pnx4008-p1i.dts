@@ -195,10 +195,14 @@
 		compatible = "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
-		/* Internal SRAM, AHB peripherals (Memory Stick host, USB), APB peripherals */
+		/*
+		 * Internal SRAM, AHB peripherals (Memory Stick host, USB, SDRAM controller), APB
+		 * peripherals
+		 */
 		ranges = <0x08000000 0x08000000 0x00010000>,
 			 <0x20000000 0x20000000 0x00100000>,
 			 <0x31020000 0x31020000 0x00001000>,
+			 <0x31080000 0x31080000 0x00001000>,
 			 <0x40000000 0x40000000 0x10000000>;
 
 		/* Main interrupt controller; register layout ER RSR SR APR ATR ITR (probe). */
@@ -388,6 +392,16 @@
 			/* USB block clock control, USB_CTRL (USB PLL), OSC_CTRL (main oscillator) */
 			reg = <0x31020f00 0x100>, <0x40004064 0x4>, <0x4000404c 0x4>;
 			#clock-cells = <1>;
+		};
+
+		/*
+		 * Idle in direct run mode (drivers/misc/pnx4008-idle.c): PWR_CTRL (bit 2 =
+		 * normal run), HCLKPLL_CTRL (bit 0 = lock), the SDRAM controller (status 0x04,
+		 * refresh period 0x24). Steps from Symbian's PowerControlExtension.dll.
+		 */
+		idle@40004044 {
+			compatible = "nxp,pnx4008-idle";
+			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>;
 		};
 
 		usbd: usbd@31020000 {

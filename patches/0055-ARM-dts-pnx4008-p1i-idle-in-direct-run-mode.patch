@@ -1,0 +1,53 @@
+From a5603d0502d6fb46499454b356e9293e065e4a97 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 3 Nov 2026 23:21:34 +0100
+Subject: [PATCH 55/55] ARM: dts: pnx4008-p1i: idle in direct run mode
+
+Add the pnx4008-idle node (PWR_CTRL, HCLKPLL_CTRL, SDRAM controller)
+and the SDRAM controller's address range to the soc bus.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index eb962d48b..68a907d9e 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -195,10 +195,14 @@ soc {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+-		/* Internal SRAM, AHB peripherals (Memory Stick host, USB), APB peripherals */
++		/*
++		 * Internal SRAM, AHB peripherals (Memory Stick host, USB, SDRAM controller), APB
++		 * peripherals
++		 */
+ 		ranges = <0x08000000 0x08000000 0x00010000>,
+ 			 <0x20000000 0x20000000 0x00100000>,
+ 			 <0x31020000 0x31020000 0x00001000>,
++			 <0x31080000 0x31080000 0x00001000>,
+ 			 <0x40000000 0x40000000 0x10000000>;
+ 
+ 		/* Main interrupt controller; register layout ER RSR SR APR ATR ITR (probe). */
+@@ -390,6 +394,16 @@ usbclk: clock-controller@31020f00 {
+ 			#clock-cells = <1>;
+ 		};
+ 
++		/*
++		 * Idle in direct run mode (drivers/misc/pnx4008-idle.c): PWR_CTRL (bit 2 =
++		 * normal run), HCLKPLL_CTRL (bit 0 = lock), the SDRAM controller (status 0x04,
++		 * refresh period 0x24). Steps from Symbian's PowerControlExtension.dll.
++		 */
++		idle@40004044 {
++			compatible = "nxp,pnx4008-idle";
++			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>;
++		};
++
+ 		usbd: usbd@31020000 {
+ 			compatible = "nxp,lpc3220-udc";
+ 			reg = <0x31020000 0x300>;
+-- 
+2.53.0
+
