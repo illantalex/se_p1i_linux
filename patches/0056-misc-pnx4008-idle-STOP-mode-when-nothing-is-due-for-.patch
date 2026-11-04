@@ -1,0 +1,383 @@
+From 63911f717ed33a385e9c9910e1e569778fbc8565 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 4 Nov 2026 22:20:13 +0100
+Subject: [PATCH 56/57] misc: pnx4008-idle: STOP mode when nothing is due for
+ 20 ms
+
+What the PNX4008's boot firmware (Symbian's PowerControlExtension)
+does when idle for longer: HCLK PLL off, SDRAM in self-refresh, STOP
+until a START controller event. The routine (pnx4008-stop.S) loads
+itself into the I-cache and its registers into the TLB first and uses
+no stack until the SDRAM is back. Symbian's START setup is kept as
+found; verified wake-ups on a Sony Ericsson P1i: system timer, keypad,
+jog dial, touch, the modem's UART (power key), USB.
+
+STOP is used when the next MSTIM event is at least 20 ms away and the
+audio DSP's PLL is off. The START status is cleared before; if an
+interrupt is already pending STOP is skipped. After it the PLL has to
+lock before normal run (otherwise direct run until it has).
+
+Off by default ("stop" parameter): measured on the P1i, about 63 mA
+instead of 69 mA (modem's battery current, backlight off), most of the
+rest is outside the SoC. Counters and the wake-up sources seen are in
+the module parameters.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/Makefile       |   2 +-
+ drivers/misc/pnx4008-idle.c | 160 +++++++++++++++++++++++++++++-------
+ drivers/misc/pnx4008-stop.S | 111 +++++++++++++++++++++++++
+ 3 files changed, 243 insertions(+), 30 deletions(-)
+ create mode 100644 drivers/misc/pnx4008-stop.S
+
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index bbbf19d8a..ecace9d28 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -63,4 +63,4 @@ obj-$(CONFIG_OPEN_DICE)		+= open-dice.o
+ obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
+ obj-$(CONFIG_VCPU_STALL_DETECTOR)	+= vcpu_stall_detector.o
+ obj-$(CONFIG_P1I_MODEM)		+= p1i-modem.o
+-obj-$(CONFIG_PNX4008_IDLE)	+= pnx4008-idle.o
++obj-$(CONFIG_PNX4008_IDLE)	+= pnx4008-idle.o pnx4008-stop.o
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index fe7ef23eb..6913c4f99 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -1,12 +1,12 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * PNX4008 idle: wait for interrupts in direct run mode (Sony Ericsson P1i).
++ * PNX4008 idle: wait for interrupts in direct run mode, or in STOP mode (Sony Ericsson P1i).
+  *
+  * In normal run mode the ARM runs at 208 MHz and HCLK (bus, SDRAM) at 104 MHz from the HCLK
+  * PLL; waiting for an interrupt only stops the ARM core's clock. In direct run mode ARM and
+  * HCLK run from SYSCLK (13 MHz), PERIPH_CLK stays at 13 MHz (the UARTs keep their rates),
+  * and the PLL keeps running, so going back takes a few cycles. Symbian's idle code
+- * (PowerControlExtension.dll) does the same before going further (STOP mode):
++ * (PowerControlExtension.dll) does the same before going further:
+  *
+  *   drain the write buffer, wait until the SDRAM controller is idle (EMC status bit 0),
+  *   SDRAM refresh period 6 x 16 HCLK cycles (7.4 us at 13 MHz), PWR_CTRL bit 2 clear
+@@ -14,8 +14,17 @@
+  *   refresh period back.
+  *
+  * A faster refresh at 104 MHz is harmless, so the refresh changes first on the way down and
+- * last on the way up. The switch can be turned off at runtime (parameter "enable"), for
+- * comparing; "entries" counts the idle periods spent in direct run.
++ * last on the way up.
++ *
++ * Further, as Symbian does when nothing is due for a while: STOP mode (pnx4008-stop.S),
++ * with the HCLK PLL off and the SDRAM in self-refresh. Only the START controller's enabled
++ * events end it; Symbian's setup of those is kept as found (system timer, keypad, touch,
++ * the modem's UART and CTS, USB). STOP is used when the next timer event (MSTIM match 0,
++ * 32 kHz) is at least STOP_MIN_TICKS away and the audio DSP's PLL is off. Before it, the
++ * START status is cleared and, if an interrupt is already pending, STOP is skipped (its
++ * START event may be gone with the clear). After it, the PLL has to lock before normal run.
++ *
++ * Parameters: enable (direct run idle), stop (STOP mode, off by default), and counters.
+  */
+ 
+ #include <linux/io.h>
+@@ -32,63 +41,156 @@
+ #define EMC_STATUS_BUSY		BIT(0)
+ #define EMC_REFRESH		0x24
+ #define EMC_REFRESH_13MHZ	6
++#define START_ER_INT		0x00	/* from 0x40004020 */
++#define START_RSR_INT		0x04	/* write 1 to clear */
++#define START_ER_PIN		0x10
++#define START_RSR_PIN		0x14
++#define START_INT_MSTIMER	BIT(25)
++#define MIC_SR			0x08	/* pending and enabled */
++#define MSTIM_COUNTER		0x08
++#define MSTIM_MCTRL		0x14
++#define MSTIM_MCTRL_MR0_INT	BIT(0)
++#define MSTIM_MATCH0		0x18
++#define DSPPLL_POWER		BIT(0)
++#define STOP_MIN_TICKS		655	/* 20 ms at 32768 Hz */
++#define PLL_LOCK_POLLS		20000
++
++void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
+ 
+-static void __iomem *pwr_ctrl, *hclkpll, *emc;
++enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, NREGS };
++static void __iomem *regs[NREGS];
+ static u32 refresh_run;
+ 
+ static bool enable = true;
+ module_param(enable, bool, 0644);
+ MODULE_PARM_DESC(enable, "wait for interrupts in direct run mode (13 MHz)");
+ 
+-static unsigned long entries;
++static bool stop;
++module_param(stop, bool, 0644);
++MODULE_PARM_DESC(stop, "STOP mode when nothing is due for 20 ms (experimental)");
++
++static unsigned long entries, stops, stop_pending, pll_slow;
+ module_param(entries, ulong, 0444);
+ MODULE_PARM_DESC(entries, "idle periods spent in direct run mode");
++module_param(stops, ulong, 0444);
++MODULE_PARM_DESC(stops, "idle periods spent in STOP mode");
++module_param(stop_pending, ulong, 0444);
++MODULE_PARM_DESC(stop_pending, "STOP skipped: an interrupt was already pending");
++module_param(pll_slow, ulong, 0444);
++MODULE_PARM_DESC(pll_slow, "PLL not locked after STOP in time (left in direct run)");
++
++/* Which START events ended STOP (debugging) */
++static unsigned int wake_int, wake_pin;
++static unsigned long wake_timer;
++module_param(wake_int, uint, 0644);
++MODULE_PARM_DESC(wake_int, "START interrupt sources seen at STOP's end (ORed; write 0)");
++module_param(wake_pin, uint, 0644);
++MODULE_PARM_DESC(wake_pin, "START pin sources seen at STOP's end (ORed; write 0)");
++module_param(wake_timer, ulong, 0444);
++MODULE_PARM_DESC(wake_timer, "STOPs ended with the system timer's event among the sources");
++
++/* Nothing due for STOP_MIN_TICKS, and no audio */
++static bool stop_wanted(void)
++{
++	u32 now, match;
++
++	if (!READ_ONCE(stop) || readl_relaxed(regs[DSPPLL]) & DSPPLL_POWER)
++		return false;
++	if (!(readl_relaxed(regs[MSTIM] + MSTIM_MCTRL) & MSTIM_MCTRL_MR0_INT))
++		return true;	/* no timer event at all */
++	now = readl_relaxed(regs[MSTIM] + MSTIM_COUNTER);
++	match = readl_relaxed(regs[MSTIM] + MSTIM_MATCH0);
++	return (s32)(match - now) >= STOP_MIN_TICKS;
++}
++
++static bool pll_locked(void)
++{
++	return readl_relaxed(regs[HCLKPLL]) & HCLKPLL_LOCK;
++}
+ 
+ static void pnx4008_idle(void)
+ {
+-	u32 pwr = readl_relaxed(pwr_ctrl), v;
++	u32 pwr = readl_relaxed(regs[PWR]), v;
++	int i;
++
++	/* Left in direct run by a PLL slow to lock after STOP: back once it has */
++	if (!(pwr & PWR_CTRL_NORMAL_RUN)) {
++		if (pll_locked()) {
++			writel(pwr | PWR_CTRL_NORMAL_RUN, regs[PWR]);
++			writel(refresh_run, regs[EMC] + EMC_REFRESH);
++		}
++		cpu_do_idle();
++		return;
++	}
+ 
+ 	/* Normal run mode from a locked PLL, or leave the clocks alone */
+-	if (!READ_ONCE(enable) || !(pwr & PWR_CTRL_NORMAL_RUN) ||
+-	    !(readl_relaxed(hclkpll) & HCLKPLL_LOCK)) {
++	if (!READ_ONCE(enable) || !pll_locked()) {
+ 		cpu_do_idle();
+ 		return;
+ 	}
+ 
+ 	/* Drain the write buffer (ARM926; dsb() is only a compiler barrier on ARMv5) */
+ 	asm volatile("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) : "memory");
+-	if (readl_relaxed_poll_timeout_atomic(emc + EMC_STATUS, v, !(v & EMC_STATUS_BUSY),
+-					      0, 100)) {
++	if (readl_relaxed_poll_timeout_atomic(regs[EMC] + EMC_STATUS, v,
++					      !(v & EMC_STATUS_BUSY), 0, 100)) {
+ 		cpu_do_idle();
+ 		return;
+ 	}
+-	writel_relaxed(EMC_REFRESH_13MHZ, emc + EMC_REFRESH);
+-	writel(pwr & ~PWR_CTRL_NORMAL_RUN, pwr_ctrl);
++	writel_relaxed(EMC_REFRESH_13MHZ, regs[EMC] + EMC_REFRESH);
++	writel(pwr & ~PWR_CTRL_NORMAL_RUN, regs[PWR]);
+ 
+-	cpu_do_idle();
++	if (stop_wanted()) {
++		writel(~0, regs[START] + START_RSR_INT);
++		writel(~0, regs[START] + START_RSR_PIN);
++		if (readl(regs[MIC] + MIC_SR)) {
++			stop_pending++;
++			cpu_do_idle();
++		} else {
++			pnx4008_stop(regs[PWR], regs[HCLKPLL], regs[EMC]);
++			stops++;
++			v = readl_relaxed(regs[START] + START_RSR_INT) &
++			    readl_relaxed(regs[START] + START_ER_INT);
++			wake_int |= v;
++			if (v & START_INT_MSTIMER)
++				wake_timer++;
++			wake_pin |= readl_relaxed(regs[START] + START_RSR_PIN) &
++				    readl_relaxed(regs[START] + START_ER_PIN);
++			for (i = 0; i < PLL_LOCK_POLLS && !pll_locked(); i++)
++				;
++			if (!pll_locked()) {
++				pll_slow++;
++				return;	/* direct run until it has locked */
++			}
++		}
++	} else {
++		cpu_do_idle();
++		entries++;
++	}
+ 
+-	writel(pwr, pwr_ctrl);
+-	writel(refresh_run, emc + EMC_REFRESH);
+-	entries++;
++	writel(pwr, regs[PWR]);
++	writel(refresh_run, regs[EMC] + EMC_REFRESH);
+ }
+ 
+ static int pnx4008_idle_probe(struct platform_device *pdev)
+ {
+-	pwr_ctrl = devm_platform_ioremap_resource(pdev, 0);
+-	if (IS_ERR(pwr_ctrl))
+-		return PTR_ERR(pwr_ctrl);
+-	hclkpll = devm_platform_ioremap_resource(pdev, 1);
+-	if (IS_ERR(hclkpll))
+-		return PTR_ERR(hclkpll);
+-	emc = devm_platform_ioremap_resource(pdev, 2);
+-	if (IS_ERR(emc))
+-		return PTR_ERR(emc);
++	struct resource *res;
++	int i;
++
++	/* Mapped without claiming: other drivers own some of these blocks */
++	for (i = 0; i < NREGS; i++) {
++		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
++		if (!res)
++			return -EINVAL;
++		regs[i] = devm_ioremap(&pdev->dev, res->start, resource_size(res));
++		if (!regs[i])
++			return -ENOMEM;
++	}
+ 
+ 	/* The boot firmware's value for normal run mode */
+-	refresh_run = readl(emc + EMC_REFRESH);
+-	if (!(readl(pwr_ctrl) & PWR_CTRL_NORMAL_RUN) || refresh_run <= EMC_REFRESH_13MHZ) {
++	refresh_run = readl(regs[EMC] + EMC_REFRESH);
++	if (!(readl(regs[PWR]) & PWR_CTRL_NORMAL_RUN) || refresh_run <= EMC_REFRESH_13MHZ) {
+ 		dev_err(&pdev->dev, "not in normal run mode (PWR_CTRL %#x, refresh %u)\n",
+-			readl(pwr_ctrl), refresh_run);
++			readl(regs[PWR]), refresh_run);
+ 		return -ENODEV;
+ 	}
+ 
+diff --git a/drivers/misc/pnx4008-stop.S b/drivers/misc/pnx4008-stop.S
+new file mode 100644
+index 000000000..96f5de0b2
+--- /dev/null
++++ b/drivers/misc/pnx4008-stop.S
+@@ -0,0 +1,111 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * PNX4008 STOP mode (pnx4008-idle.c): HCLK PLL off, SDRAM in self-refresh, all clocks
++ * stopped until an enabled START event; the steps of Symbian's PowerControlExtension.dll.
++ *
++ * void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
++ *
++ * Called in direct run mode with interrupts off. From the self-refresh request until the
++ * SDRAM is back nothing may touch it: the routine is loaded into the I-cache first, its
++ * register addresses into the TLB, and it uses no stack in between. Returns with the HCLK
++ * PLL powering up (not locked yet), the SDRAM out of self-refresh.
++ *
++ * PWR_CTRL: bit 0 STOP, bit 7 SDRAM self-refresh auto exit, bit 8 update the self-refresh
++ * request, bit 9 self-refresh request. EMC status (0x04) bit 2: SDRAM in self-refresh.
++ */
++
++#include <linux/linkage.h>
++#include <asm/assembler.h>
++
++#define PWR_STOP	0x001
++#define PWR_SR_AUTOEXIT	0x080
++#define PWR_SR_UPDATE	0x100
++#define PWR_SR_REQ	0x200
++#define HCLKPLL_POWER	0x10000
++#define EMC_STATUS	0x04
++#define EMC_STATUS_SR	0x04
++#define POLL_LIMIT	0x10000
++
++	.text
++	.align	5
++ENTRY(pnx4008_stop)
++	stmfd	sp!, {r4, r5, lr}
++
++	/* The code into the I-cache (line by line), the registers into the TLB */
++	adr	r3, pnx4008_stop
++	adr	r4, pnx4008_stop_end
++1:	mcr	p15, 0, r3, c7, c13, 1		@ prefetch I-cache line
++	add	r3, r3, #32
++	cmp	r3, r4
++	blo	1b
++	ldr	r3, [r0]
++	ldr	r3, [r1]
++	ldr	r3, [r2, #EMC_STATUS]
++	mov	r3, #0
++	mcr	p15, 0, r3, c7, c10, 4		@ drain the write buffer
++
++	/* HCLK PLL off: ARM and HCLK run from SYSCLK now */
++	ldr	r3, [r1]
++	bic	r3, r3, #HCLKPLL_POWER
++	str	r3, [r1]
++
++	/* Ask for SDRAM self-refresh and wait for it */
++	ldr	r3, [r0]
++	orr	r3, r3, #PWR_SR_REQ
++	str	r3, [r0]
++	orr	r3, r3, #PWR_SR_UPDATE
++	str	r3, [r0]
++	bic	r3, r3, #PWR_SR_UPDATE
++	str	r3, [r0]
++	mov	r5, #POLL_LIMIT
++2:	ldr	r4, [r2, #EMC_STATUS]
++	tst	r4, #EMC_STATUS_SR
++	bne	3f
++	subs	r5, r5, #1
++	bne	2b
++	b	5f				@ never came: withdraw the request
++
++	/* STOP, with the SDRAM leaving self-refresh by itself at the wake-up */
++3:	orr	r3, r3, #PWR_SR_AUTOEXIT
++	str	r3, [r0]
++	bic	r3, r3, #PWR_SR_REQ
++	str	r3, [r0]
++	orr	r3, r3, #PWR_STOP
++	str	r3, [r0]
++	ldr	r4, [r0]
++	nop
++	nop
++	nop
++	nop
++	nop
++	bic	r3, r3, #(PWR_STOP | PWR_SR_AUTOEXIT)
++	str	r3, [r0]
++
++	/* Until the SDRAM is out of self-refresh */
++	mov	r5, #POLL_LIMIT
++4:	ldr	r4, [r2, #EMC_STATUS]
++	tst	r4, #EMC_STATUS_SR
++	beq	6f
++	subs	r5, r5, #1
++	bne	4b
++5:	bic	r3, r3, #PWR_SR_REQ
++	str	r3, [r0]
++	orr	r3, r3, #PWR_SR_UPDATE
++	str	r3, [r0]
++	bic	r3, r3, #PWR_SR_UPDATE
++	str	r3, [r0]
++	mov	r5, #POLL_LIMIT
++7:	ldr	r4, [r2, #EMC_STATUS]
++	tst	r4, #EMC_STATUS_SR
++	beq	6f
++	subs	r5, r5, #1
++	bne	7b
++
++	/* HCLK PLL on again; the caller waits for the lock */
++6:	ldr	r3, [r1]
++	orr	r3, r3, #HCLKPLL_POWER
++	str	r3, [r1]
++	ldmfd	sp!, {r4, r5, pc}
++	.align	5
++pnx4008_stop_end:
++ENDPROC(pnx4008_stop)
+-- 
+2.53.0
+

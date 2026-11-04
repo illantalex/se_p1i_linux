@@ -1,0 +1,42 @@
+From 323f399e7cc935a451e83cb09de5f58c05fa1f22 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 4 Nov 2026 22:20:14 +0100
+Subject: [PATCH 57/57] ARM: dts: pnx4008-p1i: registers for STOP mode idle
+
+The pnx4008-idle node also maps the START controller, the MIC, the
+MSTIM and DSPPLLCTRL.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 68a907d9e..ca45ff994 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -395,13 +395,17 @@ usbclk: clock-controller@31020f00 {
+ 		};
+ 
+ 		/*
+-		 * Idle in direct run mode (drivers/misc/pnx4008-idle.c): PWR_CTRL (bit 2 =
+-		 * normal run), HCLKPLL_CTRL (bit 0 = lock), the SDRAM controller (status 0x04,
+-		 * refresh period 0x24). Steps from Symbian's PowerControlExtension.dll.
++		 * Idle in direct run or STOP mode (drivers/misc/pnx4008-idle.c): PWR_CTRL (bit 2
++		 * = normal run), HCLKPLL_CTRL (bit 0 = lock), the SDRAM controller (status 0x04,
++		 * refresh period 0x24); for STOP the START controller (its status is cleared),
++		 * the MIC (pending interrupts), the MSTIM (next timer event) and DSPPLLCTRL
++		 * (audio running). Steps from Symbian's PowerControlExtension.dll.
+ 		 */
+ 		idle@40004044 {
+ 			compatible = "nxp,pnx4008-idle";
+-			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>;
++			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>,
++			      <0x40004020 0x20>, <0x40008000 0x10>, <0x40034000 0x20>,
++			      <0x400e8060 0x4>;
+ 		};
+ 
+ 		usbd: usbd@31020000 {
+-- 
+2.53.0
+

@@ -1,16 +1,18 @@
 #!/bin/sh
-# powertest4.sh -- does idling in direct run mode (13 MHz, drivers/misc/pnx4008-idle.c) save
-# battery? Runs detached (pull the USB cable first if it charges), backlight off throughout.
-# Alternates phases with the direct run idle on and off, ROUNDS times. The modem's battery
-# current is a slow average (it changes every 5-12 minutes), so the phases are long; the
-# voltage and percentage over the whole run count as well.
+# powertest4.sh -- does an idle mode of drivers/misc/pnx4008-idle.c save battery? Runs
+# detached (pull the USB cable first if it charges), backlight off throughout. Alternates
+# phases with the driver's parameter PARAM at 1 and at 0, ROUNDS times: "enable" (direct run
+# idle against full speed) or "stop" (STOP mode against direct run idle). The modem's
+# battery current is a slow average (it changes every 5-12 minutes), so the phases are long;
+# the voltage and percentage over the whole run count as well.
 # Log: /root/powertest4.log
 #
-#   ./powertest4.sh [DELAY_S] [PHASE_S] [ROUNDS]     (defaults 60, 900 and 2)
+#   ./powertest4.sh [DELAY_S] [PHASE_S] [ROUNDS] [PARAM]     (defaults 60, 900, 2, enable)
 
 DELAY=${1:-60}
 PHASE=${2:-900}
 ROUNDS=${3:-2}
+PARAM=${4:-enable}
 LOG=/root/powertest4.log
 BL=/sys/class/backlight/backlight/brightness
 P=/sys/module/pnx4008_idle/parameters
@@ -25,10 +27,11 @@ bat() { grep "^$1=" /run/p1i-battery | cut -d= -f2; }
 sample() {
 	echo "$(date +%T) $1 cur=$(bat battery_current) mv=$(bat battery_mv)" \
 	     "state43=$(bat battery_43) pct=$(bat battery_percent) level=$(bat level)" \
-	     "entries=$(cat $P/entries) uptime_idle=$(cat /proc/uptime)" >> $LOG
+	     "entries=$(cat $P/entries) stops=$(cat $P/stops 2>/dev/null)" \
+	     "uptime_idle=$(cat /proc/uptime)" >> $LOG
 }
 phase() {
-	echo "$2" > $P/enable
+	echo "$2" > $P/$PARAM
 	end=$(( $(date +%s) + PHASE ))
 	while [ $(date +%s) -lt $end ]; do
 		sample "$1"
@@ -37,16 +40,16 @@ phase() {
 }
 
 old=$(cat $BL)
-echo "start $(date) delay=$DELAY phase=$PHASE rounds=$ROUNDS" > $LOG
+echo "start $(date) delay=$DELAY phase=$PHASE rounds=$ROUNDS param=$PARAM" > $LOG
 sleep "$DELAY"
 echo 0 > $BL
 i=0
 while [ $i -lt "$ROUNDS" ]; do
-	phase direct_run 1
-	phase full_speed 0
+	phase ${PARAM}_on 1
+	phase ${PARAM}_off 0
 	i=$((i + 1))
 done
-echo 1 > $P/enable
+[ "$PARAM" = enable ] && echo 1 > $P/enable || echo 0 > $P/$PARAM
 echo "$old" > $BL
 sample end
 echo "done $(date)" >> $LOG
