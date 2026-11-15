@@ -73,6 +73,14 @@ chroot /newroot /usr/local/bin/busybox sh -c "B=/usr/local/bin/busybox
 	while [ ! -c /dev/mem ]; do \$B sleep 1; done
 	exec /usr/local/bin/p1ibat -r off" </dev/null >/dev/null 2>&1 &
 
+# Hardware watchdog: a hang (even with interrupts off) resets the phone into Symbian after
+# 60 s instead of leaving it dead until the battery comes out. Fed every 15 s; its clock
+# stops with the SoC's in STOP mode, so long sleeps are fine. Inside the new root, like
+# p1ibat (killed cleanly at shutdown, which disarms it).
+chroot /newroot /usr/local/bin/busybox sh -c "B=/usr/local/bin/busybox
+	while [ ! -c /dev/watchdog ]; do \$B sleep 1; done
+	exec \$B watchdog -F -T 60 -t 15 /dev/watchdog" </dev/null >/dev/null 2>&1 &
+
 # USB network to the PC: address, route, DNS, clock (see /etc/p1i-usbnet.sh).
 /etc/p1i-usbnet.sh /newroot
 

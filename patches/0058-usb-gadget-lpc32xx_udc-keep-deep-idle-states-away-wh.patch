@@ -1,0 +1,66 @@
+From 748c9916327b7d75eede3fad0f99a5827b0b1236 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 15 Nov 2026 09:09:51 +0100
+Subject: [PATCH 58/60] usb: gadget: lpc32xx_udc: keep deep idle states away
+ while VBUS is present
+
+On the PNX4008 (Sony Ericsson P1i) the idle code can stop the SoC's
+clocks, AHB included. With a cable connected, the device controller's
+DMA then failed ("udc_handle_dma_ep: AHB critical error!") and the
+gadget's network stopped working until the cable was replugged.
+
+File a CPU latency PM QoS request of 0 while VBUS is present (in
+lpc32xx_vbus_session, which every VBUS change goes through) and drop
+it when VBUS goes away or the driver is removed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index b38efea5f..8ee021a4a 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -30,6 +30,7 @@
+ #include <linux/usb/ch9.h>
+ #include <linux/usb/gadget.h>
+ #include <linux/usb/isp1301.h>
++#include <linux/pm_qos.h>
+ 
+ #ifdef CONFIG_USB_GADGET_DEBUG_FILES
+ #include <linux/debugfs.h>
+@@ -154,6 +155,8 @@ struct lpc32xx_udc {
+ 	/* VBUS detection, pullup, and power flags */
+ 	u8			vbus;
+ 	u8			last_vbus;
++	/* No deep idle states while connected: they stop the AHB under the DMA */
++	struct pm_qos_request	pm_qos;
+ 	int			pullup;
+ 	int			poweron;
+ 	enum atx_type		atx;
+@@ -2522,6 +2525,11 @@ static int lpc32xx_vbus_session(struct usb_gadget *gadget, int is_active)
+ 	unsigned long flags;
+ 	struct lpc32xx_udc *udc = to_udc(gadget);
+ 
++	if (is_active && !cpu_latency_qos_request_active(&udc->pm_qos))
++		cpu_latency_qos_add_request(&udc->pm_qos, 0);
++	else if (!is_active && cpu_latency_qos_request_active(&udc->pm_qos))
++		cpu_latency_qos_remove_request(&udc->pm_qos);
++
+ 	spin_lock_irqsave(&udc->lock, flags);
+ 
+ 	/* Doesn't need lock */
+@@ -3264,6 +3272,9 @@ static int lpc32xx_udc_remove(struct platform_device *pdev)
+ 	if (udc->driver)
+ 		return -EBUSY;
+ 
++	if (cpu_latency_qos_request_active(&udc->pm_qos))
++		cpu_latency_qos_remove_request(&udc->pm_qos);
++
+ 	for (i = 0; i < NUM_ENDPOINTS; i++)
+ 		del_timer_sync(&udc->ep[i].dd_timer);
+ 
+-- 
+2.53.0
+

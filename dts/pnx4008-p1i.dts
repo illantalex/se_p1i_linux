@@ -398,14 +398,15 @@
 		 * Idle in direct run or STOP mode (drivers/misc/pnx4008-idle.c): PWR_CTRL (bit 2
 		 * = normal run), HCLKPLL_CTRL (bit 0 = lock), the SDRAM controller (status 0x04,
 		 * refresh period 0x24); for STOP the START controller (its status is cleared),
-		 * the MIC (pending interrupts), the MSTIM (next timer event) and DSPPLLCTRL
-		 * (audio running). Steps from Symbian's PowerControlExtension.dll.
+		 * the MIC (pending interrupts), the MSTIM (next timer event), DSPPLLCTRL
+		 * (audio running) and DSPCLKCTRL, and 0x40004008-0x40004013 (Symbian's bus
+		 * master handshake). Steps from Symbian's PowerControlExtension.dll.
 		 */
 		idle@40004044 {
 			compatible = "nxp,pnx4008-idle";
 			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>,
 			      <0x40004020 0x20>, <0x40008000 0x10>, <0x40034000 0x20>,
-			      <0x400e8060 0x4>;
+			      <0x400e8060 0x8>, <0x40004008 0xc>;
 		};
 
 		usbd: usbd@31020000 {

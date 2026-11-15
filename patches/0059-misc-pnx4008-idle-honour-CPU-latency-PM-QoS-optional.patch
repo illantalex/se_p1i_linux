@@ -1,0 +1,183 @@
+From aa6813ee0d9d9dcc62cd234722553a4b4358175c Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 15 Nov 2026 09:09:52 +0100
+Subject: [PATCH 59/60] misc: pnx4008-idle: honour CPU latency PM QoS; optional
+ bus master handshake
+
+STOP mode is skipped while a CPU latency PM QoS request asks for less
+than 5 ms (the USB device controller while connected; counted in
+"stop_qos").
+
+Add Symbian's step before lowering the clocks as an option
+("handshake", off by default, not tested yet): 0x84 to 0x40004008,
+wait for bits 2 and 7 in 0x40004010, DSPCLKCTRL bit 6, and the reverse
+afterwards; it probably asks two AHB masters to pause. Its timeouts are
+counted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 75 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 71 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index 6913c4f99..f56b3ace0 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -20,7 +20,9 @@
+  * with the HCLK PLL off and the SDRAM in self-refresh. Only the START controller's enabled
+  * events end it; Symbian's setup of those is kept as found (system timer, keypad, touch,
+  * the modem's UART and CTS, USB). STOP is used when the next timer event (MSTIM match 0,
+- * 32 kHz) is at least STOP_MIN_TICKS away and the audio DSP's PLL is off. Before it, the
++ * 32 kHz) is at least STOP_MIN_TICKS away, the audio DSP's PLL is off and no CPU latency
++ * PM QoS request is below STOP_LATENCY_US (the USB device controller files one while the
++ * cable is in: its DMA failed with "AHB critical error" under STOP). Before it, the
+  * START status is cleared and, if an interrupt is already pending, STOP is skipped (its
+  * START event may be gone with the clear). After it, the PLL has to lock before normal run.
+  *
+@@ -32,6 +34,7 @@
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_qos.h>
+ #include <asm/proc-fns.h>
+ #include <asm/system_misc.h>
+ 
+@@ -52,12 +55,19 @@
+ #define MSTIM_MCTRL_MR0_INT	BIT(0)
+ #define MSTIM_MATCH0		0x18
+ #define DSPPLL_POWER		BIT(0)
++#define DSPCLKCTRL		0x04	/* from DSPPLLCTRL */
++#define DSPCLKCTRL_IDLE		BIT(6)	/* set by Symbian around its low-power modes */
++#define AHB_IDLE_SET		0x00	/* from 0x40004008 */
++#define AHB_IDLE_CLR		0x04
++#define AHB_IDLE_STATUS		0x08
++#define AHB_IDLE_MASTERS	0x84	/* bits 2 and 7; acknowledged in the status */
+ #define STOP_MIN_TICKS		655	/* 20 ms at 32768 Hz */
++#define STOP_LATENCY_US		5000	/* the PLL has to lock again */
+ #define PLL_LOCK_POLLS		20000
+ 
+ void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
+ 
+-enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, NREGS };
++enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, AHBIDLE, NREGS };
+ static void __iomem *regs[NREGS];
+ static u32 refresh_run;
+ 
+@@ -65,6 +75,14 @@ static bool enable = true;
+ module_param(enable, bool, 0644);
+ MODULE_PARM_DESC(enable, "wait for interrupts in direct run mode (13 MHz)");
+ 
++static bool handshake;	/* not tested yet: off by default */
++module_param(handshake, bool, 0644);
++MODULE_PARM_DESC(handshake, "ask bus masters 2 and 7 to pause before lowering the clocks");
++
++static unsigned long handshake_timeouts;
++module_param(handshake_timeouts, ulong, 0444);
++MODULE_PARM_DESC(handshake_timeouts, "bus masters did not acknowledge (full speed instead)");
++
+ static bool stop;
+ module_param(stop, bool, 0644);
+ MODULE_PARM_DESC(stop, "STOP mode when nothing is due for 20 ms (experimental)");
+@@ -89,13 +107,25 @@ MODULE_PARM_DESC(wake_pin, "START pin sources seen at STOP's end (ORed; write 0)
+ module_param(wake_timer, ulong, 0444);
+ MODULE_PARM_DESC(wake_timer, "STOPs ended with the system timer's event among the sources");
+ 
+-/* Nothing due for STOP_MIN_TICKS, and no audio */
++static unsigned long stop_qos;
++module_param(stop_qos, ulong, 0444);
++MODULE_PARM_DESC(stop_qos, "STOP skipped: a driver asked for a short wake-up latency");
++
++/*
++ * Nothing due for STOP_MIN_TICKS, no audio, and no driver that needs quick wake-ups (CPU
++ * latency PM QoS: the USB device controller while connected, its DMA fails with the AHB
++ * stopped)
++ */
+ static bool stop_wanted(void)
+ {
+ 	u32 now, match;
+ 
+ 	if (!READ_ONCE(stop) || readl_relaxed(regs[DSPPLL]) & DSPPLL_POWER)
+ 		return false;
++	if (cpu_latency_qos_limit() < STOP_LATENCY_US) {
++		stop_qos++;
++		return false;
++	}
+ 	if (!(readl_relaxed(regs[MSTIM] + MSTIM_MCTRL) & MSTIM_MCTRL_MR0_INT))
+ 		return true;	/* no timer event at all */
+ 	now = readl_relaxed(regs[MSTIM] + MSTIM_COUNTER);
+@@ -108,6 +138,40 @@ static bool pll_locked(void)
+ 	return readl_relaxed(regs[HCLKPLL]) & HCLKPLL_LOCK;
+ }
+ 
++/*
++ * Symbian's step before direct run (and so before STOP): write 0x84 to 0x40004008 and wait
++ * until 0x40004010 shows bits 2 and 7, then DSPCLKCTRL bit 6; the reverse afterwards, 0x84
++ * to 0x4000400c. Probably asks two AHB masters (DMA engines: the display update module,
++ * USB?) to pause. Without it the display engine stopped for good once after STOP sessions;
++ * whether this is the cause is not tested yet ("handshake", off by default).
++ */
++static bool masters_pause(void)
++{
++	u32 v;
++
++	if (!READ_ONCE(handshake))
++		return true;
++	writel(AHB_IDLE_MASTERS, regs[AHBIDLE] + AHB_IDLE_SET);
++	if (readl_relaxed_poll_timeout_atomic(regs[AHBIDLE] + AHB_IDLE_STATUS, v,
++					      (v & AHB_IDLE_MASTERS) == AHB_IDLE_MASTERS, 0, 200)) {
++		writel(AHB_IDLE_MASTERS, regs[AHBIDLE] + AHB_IDLE_CLR);
++		handshake_timeouts++;
++		return false;
++	}
++	writel(readl_relaxed(regs[DSPPLL] + DSPCLKCTRL) | DSPCLKCTRL_IDLE,
++	       regs[DSPPLL] + DSPCLKCTRL);
++	return true;
++}
++
++static void masters_resume(void)
++{
++	if (!READ_ONCE(handshake))
++		return;
++	writel(readl_relaxed(regs[DSPPLL] + DSPCLKCTRL) & ~DSPCLKCTRL_IDLE,
++	       regs[DSPPLL] + DSPCLKCTRL);
++	writel(AHB_IDLE_MASTERS, regs[AHBIDLE] + AHB_IDLE_CLR);
++}
++
+ static void pnx4008_idle(void)
+ {
+ 	u32 pwr = readl_relaxed(regs[PWR]), v;
+@@ -118,13 +182,14 @@ static void pnx4008_idle(void)
+ 		if (pll_locked()) {
+ 			writel(pwr | PWR_CTRL_NORMAL_RUN, regs[PWR]);
+ 			writel(refresh_run, regs[EMC] + EMC_REFRESH);
++			masters_resume();
+ 		}
+ 		cpu_do_idle();
+ 		return;
+ 	}
+ 
+ 	/* Normal run mode from a locked PLL, or leave the clocks alone */
+-	if (!READ_ONCE(enable) || !pll_locked()) {
++	if (!READ_ONCE(enable) || !pll_locked() || !masters_pause()) {
+ 		cpu_do_idle();
+ 		return;
+ 	}
+@@ -133,6 +198,7 @@ static void pnx4008_idle(void)
+ 	asm volatile("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) : "memory");
+ 	if (readl_relaxed_poll_timeout_atomic(regs[EMC] + EMC_STATUS, v,
+ 					      !(v & EMC_STATUS_BUSY), 0, 100)) {
++		masters_resume();
+ 		cpu_do_idle();
+ 		return;
+ 	}
+@@ -169,6 +235,7 @@ static void pnx4008_idle(void)
+ 
+ 	writel(pwr, regs[PWR]);
+ 	writel(refresh_run, regs[EMC] + EMC_REFRESH);
++	masters_resume();
+ }
+ 
+ static int pnx4008_idle_probe(struct platform_device *pdev)
+-- 
+2.53.0
+

@@ -610,6 +610,13 @@ static void leds_setup(void)
 		leds[i].fd = open("/dev/uleds", O_RDWR | O_NONBLOCK);
 		if (leds[i].fd < 0)
 			continue;
+		/*
+		 * The indicator LED may still be lit from Symbian (e.g. green after charging): a
+		 * few mA all night. Unknown state: the first update switches it off. Not the
+		 * vibrator: a stop without a start is an untested call.
+		 */
+		if (leds[i].obj == OBJ_LED)
+			leds[i].sent = -1;
 		memset(&dev, 0, sizeof(dev));
 		strncpy(dev.name, leds[i].name, sizeof(dev.name) - 1);
 		dev.max_brightness = 1;

@@ -18,5 +18,8 @@ p1ikbd
 mkdir -p /run
 p1ibat -r off
 
+# Hardware watchdog: a hang resets the phone into Symbian after 60 s (fed every 15 s)
+watchdog -T 60 -t 15 /dev/watchdog
+
 echo
 echo "P1i: userspace up on $(uname -sr), $(cut -d' ' -f1 /proc/uptime)s after boot"
