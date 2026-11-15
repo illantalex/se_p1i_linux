@@ -1,7 +1,7 @@
 From dd7e139b6b24dc78e87c9a99175c78597cc70799 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sat, 24 Oct 2026 21:33:21 +0200
-Subject: [PATCH 50/60] ALSA: arm: pnx4008-dsp: tell an idle, a powered-down
+Subject: [PATCH 50/62] ALSA: arm: pnx4008-dsp: tell an idle, a powered-down
  and a FM-set-up DSP apart
 
 When the handover left no PCM stream (semaphore 2 masked), the probe took

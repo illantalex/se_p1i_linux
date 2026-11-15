@@ -417,6 +417,12 @@
 				     <28 IRQ_TYPE_LEVEL_HIGH>, <26 IRQ_TYPE_LEVEL_LOW>;
 			clocks = <&usbclk LPC32XX_USB_CLK_DEVICE>;
 			transceiver = <&usb_transceiver>;
+			/*
+			 * GPO_13 -> R2833 -> OR gate D2820 -> USB_CH = modem GPIO47: on its
+			 * rising edge the modem charges from VBUS at the current saved by
+			 * IUsbChargingControl (500 mA). Symbian sets it at each plug-in.
+			 */
+			charge-gpios = <&gpio 5 13 GPIO_ACTIVE_HIGH>;
 		};
 
 		i2cusb: i2c@31020300 {

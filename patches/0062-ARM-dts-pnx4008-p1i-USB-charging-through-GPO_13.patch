@@ -1,0 +1,35 @@
+From b47528f5626df0c6e4fab0ce32d4bcaf64c5b190 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 15 Nov 2026 20:44:15 +0100
+Subject: [PATCH 62/62] ARM: dts: pnx4008-p1i: USB charging through GPO_13
+
+GPO_13 reaches the modem's USB_CH input (GPIO47) through R2833 and an
+OR gate; the modem charges from VBUS on its rising edge, at the limit
+saved through IUsbChargingControl (500 mA). Hand it to the USB device
+controller as its charge GPIO.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 2062ac3a0..589638d7b 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -417,6 +417,12 @@ usbd: usbd@31020000 {
+ 				     <28 IRQ_TYPE_LEVEL_HIGH>, <26 IRQ_TYPE_LEVEL_LOW>;
+ 			clocks = <&usbclk LPC32XX_USB_CLK_DEVICE>;
+ 			transceiver = <&usb_transceiver>;
++			/*
++			 * GPO_13 -> R2833 -> OR gate D2820 -> USB_CH = modem GPIO47: on its
++			 * rising edge the modem charges from VBUS at the current saved by
++			 * IUsbChargingControl (500 mA). Symbian sets it at each plug-in.
++			 */
++			charge-gpios = <&gpio 5 13 GPIO_ACTIVE_HIGH>;
+ 		};
+ 
+ 		i2cusb: i2c@31020300 {
+-- 
+2.53.0
+

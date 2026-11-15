@@ -1,0 +1,66 @@
+From daa15a4c9d88d8c478a8cfaf50e07c0ef0b719ff Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 15 Nov 2026 20:44:15 +0100
+Subject: [PATCH 61/62] usb: gadget: lpc32xx_udc: optional charge GPIO that
+ follows VBUS
+
+On the Sony Ericsson P1i the modem runs the battery charger. It starts
+charging from VBUS on the rising edge of its USB_CH input, which the
+application processor drives through GPO_13 (Symbian sets it at each
+plug-in and clears it at unplug). Without it the phone never charges
+from a PC under Linux.
+
+Add an optional "charge" GPIO: low at probe, then set to the VBUS state
+in lpc32xx_vbus_session, which every VBUS change goes through.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index 8ee021a4a..dd582636b 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -19,6 +19,7 @@
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/dmapool.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
+@@ -157,6 +158,8 @@ struct lpc32xx_udc {
+ 	u8			last_vbus;
+ 	/* No deep idle states while connected: they stop the AHB under the DMA */
+ 	struct pm_qos_request	pm_qos;
++	/* Optional line that tells the charger it may draw from VBUS */
++	struct gpio_desc	*charge_gpio;
+ 	int			pullup;
+ 	int			poweron;
+ 	enum atx_type		atx;
+@@ -2530,6 +2533,8 @@ static int lpc32xx_vbus_session(struct usb_gadget *gadget, int is_active)
+ 	else if (!is_active && cpu_latency_qos_request_active(&udc->pm_qos))
+ 		cpu_latency_qos_remove_request(&udc->pm_qos);
+ 
++	gpiod_set_value_cansleep(udc->charge_gpio, is_active);
++
+ 	spin_lock_irqsave(&udc->lock, flags);
+ 
+ 	/* Doesn't need lock */
+@@ -3144,6 +3149,12 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
+ 		return PTR_ERR(udc->udp_baseaddr);
+ 	}
+ 
++	/* Low until VBUS shows up: the charger acts on the rising edge */
++	udc->charge_gpio = devm_gpiod_get_optional(dev, "charge", GPIOD_OUT_LOW);
++	if (IS_ERR(udc->charge_gpio))
++		return dev_err_probe(dev, PTR_ERR(udc->charge_gpio),
++				     "failed to get charge GPIO\n");
++
+ 	/* Get USB device clock */
+ 	udc->usb_slv_clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(udc->usb_slv_clk)) {
+-- 
+2.53.0
+

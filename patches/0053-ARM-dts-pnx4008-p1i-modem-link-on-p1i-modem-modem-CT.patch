@@ -1,7 +1,7 @@
 From 8e71169e3beefa800bea90b5fc35f8c497805504 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 3 Nov 2026 21:52:30 +0100
-Subject: [PATCH 53/60] ARM: dts: pnx4008-p1i: modem link on p1i-modem, modem
+Subject: [PATCH 53/62] ARM: dts: pnx4008-p1i: modem link on p1i-modem, modem
  CTS as an input event
 
 UART3 (verified on MIC line 7) goes to the new p1i-modem driver instead
