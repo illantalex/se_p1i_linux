@@ -1,0 +1,77 @@
+From e8dcf9cb578d42fa0b3d53253446a0988dd595a0 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 17 Nov 2026 21:21:48 +0100
+Subject: [PATCH 64/66] ARM: dts: pnx4008-p1i: backlight enable as the
+ backlight's power supply
+
+GPO_10 (QWERTY_BACKLIGHT_EN) was held high by a hog. With the PWM off
+the display then still glowed faintly in the dark; Symbian drops it
+together with the PWM. Make it a fixed regulator used as the
+backlight's power-supply: pwm-backlight switches it on before the PWM
+starts and off after it stops, so the transient GPO_09/10 state that
+flashes the keypad never happens with the PWM running. 500 ms between
+PWM off and supply off keep the keypad from flashing (tested).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 33 +++++++++++++++++++------------
+ 1 file changed, 20 insertions(+), 13 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 589638d7b..e496f92d2 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -166,15 +166,30 @@ xtal_32k: xtal-32k {
+ 	 * with the PWM disabled its pin is low and both are dark. GPO_09 NUM_BACKLIGHT_EN and
+ 	 * GPO_10 QWERTY_BACKLIGHT_EN, verified on the device:
+ 	 *   9/10 = 0/0 all off, 1/0 or 0/1 display + keypad, 1/1 display only.
+-	 * So GPO_10 is held high (hog in the gpio node) and GPO_09 (active low) is the keypad
+-	 * LED; display on/off is the PWM alone, which darkens everything when disabled,
+-	 * whatever GPO_09 is. GPO_10 is deliberately not the backlight's enable-gpios:
+-	 * pwm-backlight toggles it while the PWM still runs, and the transient 1/0 state
+-	 * flashes the keypad. Keypad brightness follows the display's.
++	 * So GPO_10 stays high while the backlight is on and GPO_09 (active low) is the keypad
++	 * LED. With the PWM disabled the display is dark, but with GPO_10 still high it glows
++	 * faintly in the dark: GPO_10 has to go low too. It is the backlight's power-supply,
++	 * not its enable-gpios: pwm-backlight switches the supply on before the PWM starts and
++	 * off after it stops, while enable-gpios changes with the PWM running, and that
++	 * transient 1/0 state flashes the keypad. Keypad brightness follows the display's.
+ 	 */
++	backlight_en: regulator-backlight-en {
++		compatible = "regulator-fixed";
++		regulator-name = "QWERTY_BACKLIGHT_EN";
++		gpio = <&gpio 5 10 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;	/* Symbian hands over with the backlight on */
++	};
++
+ 	backlight: backlight {
+ 		compatible = "pwm-backlight";
+ 		pwms = <&pwm2 0 7812500 0>;	/* 32768 Hz / 256 = 128 Hz, as Symbian */
++		power-supply = <&backlight_en>;
++		/*
++		 * The boost converter's output stays charged after the PWM stops: GPO_10
++		 * going low at once flashes the keypad with it (gone with 0.5 s, tested).
++		 */
++		post-pwm-off-delay-ms = <500>;
+ 		/* Below ~15% duty the boost converter gives no visible light. */
+ 		brightness-levels = <0 40 64 96 128 160 192 224 255>;
+ 		default-brightness-level = <6>;	/* 75%, near Symbian's 73% */
+@@ -489,14 +504,6 @@ gpio: gpio@40028000 {
+ 			gpio-controller;
+ 			#gpio-cells = <3>;
+ 
+-			/* Backlight enable, see the backlight node. */
+-			qwerty-backlight-en-hog {
+-				gpio-hog;
+-				gpios = <5 10 GPIO_ACTIVE_HIGH>;
+-				output-high;
+-				line-name = "QWERTY_BACKLIGHT_EN";
+-			};
+-
+ 			/*
+ 			 * VADC_FM_2.8 (FM receiver and codec input supply), see fm-radio@10; the
+ 			 * radio driver has no supply handling, so it stays on.
+-- 
+2.53.0
+

@@ -15,13 +15,16 @@ set -e
 HOST=${1:-root@192.168.7.2}
 cd "$(dirname "$0")"
 
-scp -q build/arch/arm/boot/zImage "$HOST":/boot/zImage
-scp -q build/arch/arm/boot/dts/pnx4008-p1i.dtb "$HOST":/boot/pnx4008-p1i.dtb
+# Into RAM (/tmp): USB traffic while the Memory Stick is written kills the USB link (the
+# polled Memory Stick driver starves the device controller's DMA: "DMA data overrun").
+scp -q build/arch/arm/boot/zImage "$HOST":/tmp/zImage
+scp -q build/arch/arm/boot/dts/pnx4008-p1i.dtb "$HOST":/tmp/pnx4008-p1i.dtb
 if [ -n "$HANDOVER" ]; then
-	scp -q "$HANDOVER/baremetal/p1i_linux.bin" "$HOST":/media/card/other/p1i_linux.bin
+	scp -q "$HANDOVER/baremetal/p1i_linux.bin" "$HOST":/tmp/p1i_linux.bin
+	ssh "$HOST" 'cp /tmp/p1i_linux.bin /media/card/other/p1i_linux.bin && sync && rm /tmp/p1i_linux.bin'
 fi
 # Without kexec-tools' reboot hook, jump directly: sync and try to remount the root
 # read-only (ext4 on the Memory Stick; usually busy, the sync is what counts).
 # The connection dies with the old kernel: keepalives end ssh a few seconds later.
-ssh -o ServerAliveInterval=2 -o ServerAliveCountMax=3 "$HOST" 'kexec -l /boot/zImage --dtb=/boot/pnx4008-p1i.dtb && echo "kexec: loaded, jumping into it" &&
+ssh -o ServerAliveInterval=2 -o ServerAliveCountMax=3 "$HOST" 'kexec -l /tmp/zImage --dtb=/tmp/pnx4008-p1i.dtb && cp /tmp/zImage /tmp/pnx4008-p1i.dtb /boot/ && echo "kexec: loaded, jumping into it" &&
 	sync && (mount -o remount,ro / || true) && nohup sh -c "sleep 1; kexec -e" </dev/null >/dev/null 2>&1 &'

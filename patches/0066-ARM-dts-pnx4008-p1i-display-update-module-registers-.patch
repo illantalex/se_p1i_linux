@@ -1,0 +1,31 @@
+From dfe6e36fa7228fb94ff5f798bf16c0b292fc9203 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 17 Nov 2026 21:21:49 +0100
+Subject: [PATCH 66/66] ARM: dts: pnx4008-p1i: display update module registers
+ for idle
+
+The idle code holds the DUM's channels around STOP: map the DUM's main
+registers and its 32 channels in the idle node.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index e496f92d2..be90e943d 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -421,7 +421,8 @@ idle@40004044 {
+ 			compatible = "nxp,pnx4008-idle";
+ 			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>,
+ 			      <0x40004020 0x20>, <0x40008000 0x10>, <0x40034000 0x20>,
+-			      <0x400e8060 0x8>, <0x40004008 0xc>;
++			      <0x400e8060 0x8>, <0x40004008 0xc>,
++			      <0x400bc000 0x60>, <0x400b8000 0x2000>;	/* DUM main, channels */
+ 		};
+ 
+ 		usbd: usbd@31020000 {
+-- 
+2.53.0
+

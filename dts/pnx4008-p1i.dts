@@ -166,15 +166,30 @@
 	 * with the PWM disabled its pin is low and both are dark. GPO_09 NUM_BACKLIGHT_EN and
 	 * GPO_10 QWERTY_BACKLIGHT_EN, verified on the device:
 	 *   9/10 = 0/0 all off, 1/0 or 0/1 display + keypad, 1/1 display only.
-	 * So GPO_10 is held high (hog in the gpio node) and GPO_09 (active low) is the keypad
-	 * LED; display on/off is the PWM alone, which darkens everything when disabled,
-	 * whatever GPO_09 is. GPO_10 is deliberately not the backlight's enable-gpios:
-	 * pwm-backlight toggles it while the PWM still runs, and the transient 1/0 state
-	 * flashes the keypad. Keypad brightness follows the display's.
+	 * So GPO_10 stays high while the backlight is on and GPO_09 (active low) is the keypad
+	 * LED. With the PWM disabled the display is dark, but with GPO_10 still high it glows
+	 * faintly in the dark: GPO_10 has to go low too. It is the backlight's power-supply,
+	 * not its enable-gpios: pwm-backlight switches the supply on before the PWM starts and
+	 * off after it stops, while enable-gpios changes with the PWM running, and that
+	 * transient 1/0 state flashes the keypad. Keypad brightness follows the display's.
 	 */
+	backlight_en: regulator-backlight-en {
+		compatible = "regulator-fixed";
+		regulator-name = "QWERTY_BACKLIGHT_EN";
+		gpio = <&gpio 5 10 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;	/* Symbian hands over with the backlight on */
+	};
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm2 0 7812500 0>;	/* 32768 Hz / 256 = 128 Hz, as Symbian */
+		power-supply = <&backlight_en>;
+		/*
+		 * The boost converter's output stays charged after the PWM stops: GPO_10
+		 * going low at once flashes the keypad with it (gone with 0.5 s, tested).
+		 */
+		post-pwm-off-delay-ms = <500>;
 		/* Below ~15% duty the boost converter gives no visible light. */
 		brightness-levels = <0 40 64 96 128 160 192 224 255>;
 		default-brightness-level = <6>;	/* 75%, near Symbian's 73% */
@@ -406,7 +421,8 @@
 			compatible = "nxp,pnx4008-idle";
 			reg = <0x40004044 0x4>, <0x40004058 0x4>, <0x31080000 0x30>,
 			      <0x40004020 0x20>, <0x40008000 0x10>, <0x40034000 0x20>,
-			      <0x400e8060 0x8>, <0x40004008 0xc>;
+			      <0x400e8060 0x8>, <0x40004008 0xc>,
+			      <0x400bc000 0x60>, <0x400b8000 0x2000>;	/* DUM main, channels */
 		};
 
 		usbd: usbd@31020000 {
@@ -488,14 +504,6 @@
 			reg = <0x40028000 0x1000>;
 			gpio-controller;
 			#gpio-cells = <3>;
-
-			/* Backlight enable, see the backlight node. */
-			qwerty-backlight-en-hog {
-				gpio-hog;
-				gpios = <5 10 GPIO_ACTIVE_HIGH>;
-				output-high;
-				line-name = "QWERTY_BACKLIGHT_EN";
-			};
 
 			/*
 			 * VADC_FM_2.8 (FM receiver and codec input supply), see fm-radio@10; the

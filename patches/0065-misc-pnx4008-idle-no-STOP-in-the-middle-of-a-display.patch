@@ -1,0 +1,136 @@
+From 6d0488786367145fc3ea015f152b0a1f1509f408 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 17 Nov 2026 21:21:48 +0100
+Subject: [PATCH 65/66] misc: pnx4008-idle: no STOP in the middle of a display
+ transfer
+
+When STOP stopped the bus and put the SDRAM into self-refresh while the
+display update module (DUM) was transferring, the DUM stayed stuck for
+good (STAT 0x009f0078, a dirty bit and register 0x28 left set, the sync
+counter stopped): the screen froze until a Symbian reboot.
+
+Before STOP, clear the dirty enable of Symbian's 32 DUM channels, as
+Symbian does when the display goes off, and skip STOP while a transfer
+is still running (counted in "stop_dum"); the channels' configuration
+comes back right after STOP. Tested: a clock redrawn every second kept
+running through 555 STOPs (345 skipped for a transfer).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 56 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index f56b3ace0..c4aceb37e 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -26,6 +26,12 @@
+  * START status is cleared and, if an interrupt is already pending, STOP is skipped (its
+  * START event may be gone with the clear). After it, the PLL has to lock before normal run.
+  *
++ * The display update module (DUM) must not be in a transfer when STOP stops the bus and the
++ * SDRAM: it then stays stuck for good (STAT 0x009f0078, a dirty bit and 0x28 = 8 left, the
++ * sync counter stopped; only a Symbian reboot revived it). Symbian clears its channels'
++ * dirty enable when the display goes off; here the same happens around each STOP, and STOP
++ * is skipped while a transfer is still running.
++ *
+  * Parameters: enable (direct run idle), stop (STOP mode, off by default), and counters.
+  */
+ 
+@@ -61,15 +67,25 @@
+ #define AHB_IDLE_CLR		0x04
+ #define AHB_IDLE_STATUS		0x08
+ #define AHB_IDLE_MASTERS	0x84	/* bits 2 and 7; acknowledged in the status */
++#define DUM_STAT		0x08	/* from 0x400bc000 */
++#define DUM_STAT_BUSY		BIT(30)
++#define DUM_DIRTY_LOW		0x20
++#define DUM_DIRTY_HIGH		0x24
++#define DUM_XFER		0x28	/* 8 during a transfer (Symbian trace) */
++#define DUM_CHANNELS		32	/* Symbian: 32 x 0x2800 bytes = the whole framebuffer */
++#define DUM_CH_STRIDE		0x100	/* from 0x400b8000 */
++#define DUM_CH_CONF		0x08
++#define DUM_CH_CONF_DIRTY	BIT(5)
+ #define STOP_MIN_TICKS		655	/* 20 ms at 32768 Hz */
+ #define STOP_LATENCY_US		5000	/* the PLL has to lock again */
+ #define PLL_LOCK_POLLS		20000
+ 
+ void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
+ 
+-enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, AHBIDLE, NREGS };
++enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, AHBIDLE, DUM, DUMCH, NREGS };
+ static void __iomem *regs[NREGS];
+ static u32 refresh_run;
++static u32 dum_conf[DUM_CHANNELS];
+ 
+ static bool enable = true;
+ module_param(enable, bool, 0644);
+@@ -111,6 +127,10 @@ static unsigned long stop_qos;
+ module_param(stop_qos, ulong, 0444);
+ MODULE_PARM_DESC(stop_qos, "STOP skipped: a driver asked for a short wake-up latency");
+ 
++static unsigned long stop_dum;
++module_param(stop_dum, ulong, 0444);
++MODULE_PARM_DESC(stop_dum, "STOP skipped: the display update module was in a transfer");
++
+ /*
+  * Nothing due for STOP_MIN_TICKS, no audio, and no driver that needs quick wake-ups (CPU
+  * latency PM QoS: the USB device controller while connected, its DMA fails with the AHB
+@@ -133,6 +153,36 @@ static bool stop_wanted(void)
+ 	return (s32)(match - now) >= STOP_MIN_TICKS;
+ }
+ 
++/* No new display transfers; the old dirty enables come back with dum_release() */
++static void dum_release(void)
++{
++	int i;
++
++	for (i = 0; i < DUM_CHANNELS; i++)
++		if (dum_conf[i] & DUM_CH_CONF_DIRTY)
++			writel(dum_conf[i], regs[DUMCH] + i * DUM_CH_STRIDE + DUM_CH_CONF);
++}
++
++static bool dum_hold(void)
++{
++	void __iomem *conf;
++	int i;
++
++	for (i = 0; i < DUM_CHANNELS; i++) {
++		conf = regs[DUMCH] + i * DUM_CH_STRIDE + DUM_CH_CONF;
++		dum_conf[i] = readl_relaxed(conf);
++		if (dum_conf[i] & DUM_CH_CONF_DIRTY)
++			writel(dum_conf[i] & ~DUM_CH_CONF_DIRTY, conf);
++	}
++	if (readl(regs[DUM] + DUM_STAT) & DUM_STAT_BUSY || readl(regs[DUM] + DUM_XFER) ||
++	    readl(regs[DUM] + DUM_DIRTY_LOW) || readl(regs[DUM] + DUM_DIRTY_HIGH)) {
++		dum_release();
++		stop_dum++;
++		return false;
++	}
++	return true;
++}
++
+ static bool pll_locked(void)
+ {
+ 	return readl_relaxed(regs[HCLKPLL]) & HCLKPLL_LOCK;
+@@ -205,15 +255,17 @@ static void pnx4008_idle(void)
+ 	writel_relaxed(EMC_REFRESH_13MHZ, regs[EMC] + EMC_REFRESH);
+ 	writel(pwr & ~PWR_CTRL_NORMAL_RUN, regs[PWR]);
+ 
+-	if (stop_wanted()) {
++	if (stop_wanted() && dum_hold()) {
+ 		writel(~0, regs[START] + START_RSR_INT);
+ 		writel(~0, regs[START] + START_RSR_PIN);
+ 		if (readl(regs[MIC] + MIC_SR)) {
+ 			stop_pending++;
+ 			cpu_do_idle();
++			dum_release();
+ 		} else {
+ 			pnx4008_stop(regs[PWR], regs[HCLKPLL], regs[EMC]);
+ 			stops++;
++			dum_release();
+ 			v = readl_relaxed(regs[START] + START_RSR_INT) &
+ 			    readl_relaxed(regs[START] + START_ER_INT);
+ 			wake_int |= v;
+-- 
+2.53.0
+
