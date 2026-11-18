@@ -1,7 +1,7 @@
 From aa6813ee0d9d9dcc62cd234722553a4b4358175c Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 15 Nov 2026 09:09:52 +0100
-Subject: [PATCH 59/66] misc: pnx4008-idle: honour CPU latency PM QoS; optional
+Subject: [PATCH 59/69] misc: pnx4008-idle: honour CPU latency PM QoS; optional
  bus master handshake
 
 STOP mode is skipped while a CPU latency PM QoS request asks for less

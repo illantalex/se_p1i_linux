@@ -1,7 +1,7 @@
 From 9917c607cb8e56eb1b9ec57a1bd08efd31de33f9 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 15 Nov 2026 09:09:52 +0100
-Subject: [PATCH 60/66] ARM: dts: pnx4008-p1i: DSPCLKCTRL and the bus master
+Subject: [PATCH 60/69] ARM: dts: pnx4008-p1i: DSPCLKCTRL and the bus master
  handshake for idle
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

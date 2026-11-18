@@ -1,0 +1,142 @@
+From 62dcfbaa039692e5a4f45d2b115837465609aaa6 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 18 Nov 2026 20:51:03 +0100
+Subject: [PATCH 67/69] usb: gadget: lpc32xx_udc: recover a descriptor that
+ retired without end of transfer
+
+On the PNX4008 (Sony Ericsson P1i, g_ether) the OUT endpoint stopped for
+good within a second of a fast copy from the PC: the PC's transmit queue
+timed out until the cable was replugged. Caught in the debug file: the
+first request's descriptor had retired with a whole frame (status
+0x5ea0027), the controller had turned the channel's DMA off as after
+every descriptor and wanted a new one (NDDR), but no end of transfer was
+pending, so the request was never completed and nothing restarted DMA.
+
+When an endpoint has a request in DMA, its DMA is off and the current
+descriptor has retired, complete it as if the end of transfer had come
+(counted as "lost" in the debug file). Checked on every DMA interrupt
+for the endpoints it does not handle anyway, and every 100 ms from the
+endpoint's timer while a request is in DMA. Tested: three 3 MB copies
+at full speed in a row, 14 lost end of transfers recovered; before, the
+first copy stalled the link.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/usb/gadget/udc/lpc32xx_udc.c | 55 +++++++++++++++++++++++++---
+ 1 file changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/usb/gadget/udc/lpc32xx_udc.c b/drivers/usb/gadget/udc/lpc32xx_udc.c
+index dd582636b..6b65bedcf 100644
+--- a/drivers/usb/gadget/udc/lpc32xx_udc.c
++++ b/drivers/usb/gadget/udc/lpc32xx_udc.c
+@@ -115,11 +115,18 @@ struct lpc32xx_ep {
+ 
+ 	bool			wedge;
+ 
+-	/* Re-check of a DMA descriptor whose end of transfer came early (PNX4008) */
++	/*
++	 * Re-check of a DMA descriptor whose end of transfer came early (PNX4008), and
++	 * the check for one that retired without its end of transfer (lost_eots)
++	 */
+ 	struct timer_list	dd_timer;
+ 	unsigned int		dd_waits;
++	unsigned int		lost_eots;
+ };
+ 
++/* How often an endpoint with a request in DMA is checked for a lost end of transfer */
++#define LOST_EOT_POLL	(HZ / 10)
++
+ enum atx_type {
+ 	ISP1301,
+ 	STOTG04,
+@@ -490,7 +497,8 @@ static void proc_ep_show(struct seq_file *s, struct lpc32xx_ep *ep)
+ 			ep->is_in ? "in" : "out");
+ 	seq_printf(s, " type %4s", epnames[ep->eptype]);
+ 	seq_printf(s, " ints: %12d", ep->totalints);
+-	seq_printf(s, " pending %d waits %u", ep->req_pending, ep->dd_waits);
++	seq_printf(s, " pending %d waits %u lost %u", ep->req_pending, ep->dd_waits,
++		   ep->lost_eots);
+ 
+ 	if (list_empty(&ep->queue))
+ 		seq_printf(s, "\t(queue empty)\n");
+@@ -1013,6 +1021,8 @@ static int udc_ep_in_req_dma(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 
+ 	/* Enable DMA and interrupt for the HW EP */
+ 	udc_ep_dma_enable(udc, hwep);
++	if (!ep->dd_waits)
++		mod_timer(&ep->dd_timer, jiffies + LOST_EOT_POLL);
+ 
+ 	/* Clear ZLP if last packet is not of MAXP size */
+ 	if (req->req.length % ep->ep.maxpacket)
+@@ -1039,6 +1049,8 @@ static int udc_ep_out_req_dma(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 
+ 	/* Enable DMA and interrupt for the HW EP */
+ 	udc_ep_dma_enable(udc, hwep);
++	if (!ep->dd_waits)
++		mod_timer(&ep->dd_timer, jiffies + LOST_EOT_POLL);
+ 	return 0;
+ }
+ 
+@@ -2169,7 +2181,34 @@ static void udc_handle_dma_ep(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
+ 
+ }
+ 
+-/* Timer: a descriptor whose end of transfer came early, looked at again. */
++/*
++ * A descriptor that retired without an end of transfer interrupt. Seen on the PNX4008 under
++ * load (g_ether, PC to phone): the frame was received completely (descriptor retired, short
++ * packet), the controller turned the channel's DMA off as after every descriptor and asks
++ * for a new one (NDDR), but no end of transfer was ever signalled, so the request was never
++ * completed and the endpoint stood still for good. Complete it as if the interrupt had come.
++ * Must be called with the lock.
++ */
++static bool udc_lost_eot(struct lpc32xx_udc *udc, struct lpc32xx_ep *ep)
++{
++	struct lpc32xx_request *req;
++
++	if (!ep->req_pending || ep->dd_waits || list_empty(&ep->queue) ||
++	    readl(USBD_EPDMAST(udc->udp_baseaddr)) & (1 << ep->hwep_num))
++		return false;
++	req = list_first_entry(&ep->queue, struct lpc32xx_request, queue);
++	if (!req->dd_desc_ptr ||
++	    !(READ_ONCE(req->dd_desc_ptr->dd_status) & DD_STATUS_DD_RETIRED))
++		return false;
++	ep->lost_eots++;
++	udc_handle_dma_ep(udc, ep);
++	return true;
++}
++
++/*
++ * Timer: a descriptor whose end of transfer came early, looked at again; otherwise, while
++ * a request is in DMA, the check for a lost end of transfer every LOST_EOT_POLL.
++ */
+ static void udc_dd_timer(struct timer_list *t)
+ {
+ 	struct lpc32xx_ep *ep = from_timer(ep, t, dd_timer);
+@@ -2177,8 +2216,12 @@ static void udc_dd_timer(struct timer_list *t)
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&udc->lock, flags);
+-	if (ep->dd_waits && ep->req_pending && !list_empty(&ep->queue))
+-		udc_handle_dma_ep(udc, ep);
++	if (ep->dd_waits) {
++		if (ep->req_pending && !list_empty(&ep->queue))
++			udc_handle_dma_ep(udc, ep);
++	} else if (!udc_lost_eot(udc, ep) && ep->req_pending && !list_empty(&ep->queue)) {
++		mod_timer(&ep->dd_timer, jiffies + LOST_EOT_POLL);
++	}
+ 	spin_unlock_irqrestore(&udc->lock, flags);
+ }
+ 
+@@ -2911,6 +2954,8 @@ static irqreturn_t lpc32xx_usb_devdma_irq(int irq, void *_udc)
+ 	for (i = 1; i < NUM_ENDPOINTS; i++) {
+ 		if (tmp & (1 << udc->ep[i].hwep_num))
+ 			udc_handle_dma_ep(udc, &udc->ep[i]);
++		else
++			udc_lost_eot(udc, &udc->ep[i]);
+ 	}
+ 
+ 	spin_unlock(&udc->lock);
+-- 
+2.53.0
+

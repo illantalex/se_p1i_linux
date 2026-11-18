@@ -15,13 +15,12 @@ set -e
 HOST=${1:-root@192.168.7.2}
 cd "$(dirname "$0")"
 
-# Into RAM (/tmp), at a limited rate: fast transfers to the phone jam the USB device
-# controller's receive DMA ("DMA data overrun", the PC's transmit queue times out until the
-# gadget resets), and the Memory Stick being written makes it worse. 300 KB/s goes through.
-scp -q -l 2400 build/arch/arm/boot/zImage "$HOST":/tmp/zImage
-scp -q -l 2400 build/arch/arm/boot/dts/pnx4008-p1i.dtb "$HOST":/tmp/pnx4008-p1i.dtb
+# Into RAM (/tmp): the Memory Stick being written while USB traffic runs used to kill the
+# link; with the lost end of transfer recovered in lpc32xx_udc full speed goes through.
+scp -q build/arch/arm/boot/zImage "$HOST":/tmp/zImage
+scp -q build/arch/arm/boot/dts/pnx4008-p1i.dtb "$HOST":/tmp/pnx4008-p1i.dtb
 if [ -n "$HANDOVER" ]; then
-	scp -q -l 2400 "$HANDOVER/baremetal/p1i_linux.bin" "$HOST":/tmp/p1i_linux.bin
+	scp -q "$HANDOVER/baremetal/p1i_linux.bin" "$HOST":/tmp/p1i_linux.bin
 	ssh "$HOST" 'cp /tmp/p1i_linux.bin /media/card/other/p1i_linux.bin && sync && rm /tmp/p1i_linux.bin'
 fi
 # Without kexec-tools' reboot hook, jump directly: sync and try to remount the root

@@ -1,0 +1,194 @@
+From 2e223db6b494909bd03ee81366f119925d5312fc Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Wed, 18 Nov 2026 20:51:04 +0100
+Subject: [PATCH 68/69] misc: pnx4008-idle: STOP only with the display off, its
+ updates held meanwhile
+
+Holding the display update module's channels only around each STOP
+still let it get stuck once in about 12000 STOPs (overnight), and the
+stuck module then looked busy for ever and kept STOP away all night.
+
+Follow the display instead, as Symbian does: with the backlight PWM
+disabled (and STOP wanted) the channels' dirty enable is cleared and
+stays cleared, and STOP waits only for a transfer still running; with
+the display back on the channels return, all of them marked dirty for a
+full redraw, and STOP is not used ("stop_display"). A module busy for
+over a second is taken as stuck already and no longer keeps STOP away
+("dum_stuck"). Tested: 565 STOPs in 38 s with the backlight off, the
+screen redrawn and updating after it came back on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 94 ++++++++++++++++++++++++++-----------
+ 1 file changed, 66 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index c4aceb37e..db61db5cb 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -27,16 +27,20 @@
+  * START event may be gone with the clear). After it, the PLL has to lock before normal run.
+  *
+  * The display update module (DUM) must not be in a transfer when STOP stops the bus and the
+- * SDRAM: it then stays stuck for good (STAT 0x009f0078, a dirty bit and 0x28 = 8 left, the
+- * sync counter stopped; only a Symbian reboot revived it). Symbian clears its channels'
+- * dirty enable when the display goes off; here the same happens around each STOP, and STOP
+- * is skipped while a transfer is still running.
++ * SDRAM: it then stays stuck for good (STAT 0x009f0078, a dirty bit and 0x28 = 8 left; only
++ * a Symbian reboot revives it). Holding its channels only around each STOP still let it get
++ * stuck once in ~12000 STOPs. So, as Symbian: STOP only while the display is off (backlight
++ * PWM disabled). Going off, the channels' dirty enable is cleared and stays cleared, and
++ * STOP waits until a running transfer has ended; coming back on, the dirty enables return
++ * and all channels are marked dirty for a full redraw. A DUM busy for over a second is
++ * taken as stuck already and no longer keeps STOP away.
+  *
+  * Parameters: enable (direct run idle), stop (STOP mode, off by default), and counters.
+  */
+ 
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/jiffies.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+@@ -76,16 +80,21 @@
+ #define DUM_CH_STRIDE		0x100	/* from 0x400b8000 */
+ #define DUM_CH_CONF		0x08
+ #define DUM_CH_CONF_DIRTY	BIT(5)
++#define DUM_CH_CTRL		0x10
++#define DUM_CH_CTRL_SETDIRTY	BIT(0)
++#define PWM_ENABLE		BIT(31)	/* backlight PWM: disabled = display off */
+ #define STOP_MIN_TICKS		655	/* 20 ms at 32768 Hz */
+ #define STOP_LATENCY_US		5000	/* the PLL has to lock again */
+ #define PLL_LOCK_POLLS		20000
+ 
+ void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
+ 
+-enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, AHBIDLE, DUM, DUMCH, NREGS };
++enum { PWR, HCLKPLL, EMC, START, MIC, MSTIM, DSPPLL, AHBIDLE, DUM, DUMCH, BLPWM, NREGS };
+ static void __iomem *regs[NREGS];
+ static u32 refresh_run;
+ static u32 dum_conf[DUM_CHANNELS];
++static bool dum_held;
++static unsigned long dum_busy_since;
+ 
+ static bool enable = true;
+ module_param(enable, bool, 0644);
+@@ -127,9 +136,13 @@ static unsigned long stop_qos;
+ module_param(stop_qos, ulong, 0444);
+ MODULE_PARM_DESC(stop_qos, "STOP skipped: a driver asked for a short wake-up latency");
+ 
+-static unsigned long stop_dum;
++static unsigned long stop_dum, stop_display, dum_stuck;
+ module_param(stop_dum, ulong, 0444);
+ MODULE_PARM_DESC(stop_dum, "STOP skipped: the display update module was in a transfer");
++module_param(stop_display, ulong, 0444);
++MODULE_PARM_DESC(stop_display, "STOP skipped: the display was on");
++module_param(dum_stuck, ulong, 0444);
++MODULE_PARM_DESC(dum_stuck, "STOPs with the display update module busy for over a second");
+ 
+ /*
+  * Nothing due for STOP_MIN_TICKS, no audio, and no driver that needs quick wake-ups (CPU
+@@ -153,34 +166,60 @@ static bool stop_wanted(void)
+ 	return (s32)(match - now) >= STOP_MIN_TICKS;
+ }
+ 
+-/* No new display transfers; the old dirty enables come back with dum_release() */
+-static void dum_release(void)
++/*
++ * Follow the display: off (backlight PWM disabled, STOP wanted) holds the DUM's channels
++ * without new transfers, on gives them back with a full redraw. True while held.
++ */
++static bool dum_follow_display(void)
+ {
++	bool hold = READ_ONCE(stop) && !(readl_relaxed(regs[BLPWM]) & PWM_ENABLE);
++	void __iomem *ch;
+ 	int i;
+ 
+-	for (i = 0; i < DUM_CHANNELS; i++)
+-		if (dum_conf[i] & DUM_CH_CONF_DIRTY)
+-			writel(dum_conf[i], regs[DUMCH] + i * DUM_CH_STRIDE + DUM_CH_CONF);
++	if (hold == dum_held)
++		return dum_held;
++	for (i = 0; i < DUM_CHANNELS; i++) {
++		ch = regs[DUMCH] + i * DUM_CH_STRIDE;
++		if (hold) {
++			dum_conf[i] = readl_relaxed(ch + DUM_CH_CONF);
++			if (dum_conf[i] & DUM_CH_CONF_DIRTY)
++				writel(dum_conf[i] & ~DUM_CH_CONF_DIRTY, ch + DUM_CH_CONF);
++		} else if (dum_conf[i] & DUM_CH_CONF_DIRTY) {
++			writel(dum_conf[i], ch + DUM_CH_CONF);
++			writel(DUM_CH_CTRL_SETDIRTY, ch + DUM_CH_CTRL);
++		}
++	}
++	dum_held = hold;
++	dum_busy_since = 0;
++	return hold;
+ }
+ 
+-static bool dum_hold(void)
++/* The held DUM has no transfer running, or has been busy for so long it is stuck anyway */
++static bool dum_quiet(void)
+ {
+-	void __iomem *conf;
+-	int i;
+-
+-	for (i = 0; i < DUM_CHANNELS; i++) {
+-		conf = regs[DUMCH] + i * DUM_CH_STRIDE + DUM_CH_CONF;
+-		dum_conf[i] = readl_relaxed(conf);
+-		if (dum_conf[i] & DUM_CH_CONF_DIRTY)
+-			writel(dum_conf[i] & ~DUM_CH_CONF_DIRTY, conf);
++	if (!(readl(regs[DUM] + DUM_STAT) & DUM_STAT_BUSY) && !readl(regs[DUM] + DUM_XFER) &&
++	    !readl(regs[DUM] + DUM_DIRTY_LOW) && !readl(regs[DUM] + DUM_DIRTY_HIGH)) {
++		dum_busy_since = 0;
++		return true;
++	}
++	if (!dum_busy_since)
++		dum_busy_since = jiffies | 1;
++	if (time_after(jiffies, dum_busy_since + HZ)) {
++		dum_stuck++;
++		return true;
+ 	}
+-	if (readl(regs[DUM] + DUM_STAT) & DUM_STAT_BUSY || readl(regs[DUM] + DUM_XFER) ||
+-	    readl(regs[DUM] + DUM_DIRTY_LOW) || readl(regs[DUM] + DUM_DIRTY_HIGH)) {
+-		dum_release();
+-		stop_dum++;
++	stop_dum++;
++	return false;
++}
++
++/* STOP only with the display off and its update module quiet */
++static bool display_allows_stop(void)
++{
++	if (!dum_follow_display()) {
++		stop_display++;
+ 		return false;
+ 	}
+-	return true;
++	return dum_quiet();
+ }
+ 
+ static bool pll_locked(void)
+@@ -255,17 +294,16 @@ static void pnx4008_idle(void)
+ 	writel_relaxed(EMC_REFRESH_13MHZ, regs[EMC] + EMC_REFRESH);
+ 	writel(pwr & ~PWR_CTRL_NORMAL_RUN, regs[PWR]);
+ 
+-	if (stop_wanted() && dum_hold()) {
++	dum_follow_display();
++	if (stop_wanted() && display_allows_stop()) {
+ 		writel(~0, regs[START] + START_RSR_INT);
+ 		writel(~0, regs[START] + START_RSR_PIN);
+ 		if (readl(regs[MIC] + MIC_SR)) {
+ 			stop_pending++;
+ 			cpu_do_idle();
+-			dum_release();
+ 		} else {
+ 			pnx4008_stop(regs[PWR], regs[HCLKPLL], regs[EMC]);
+ 			stops++;
+-			dum_release();
+ 			v = readl_relaxed(regs[START] + START_RSR_INT) &
+ 			    readl_relaxed(regs[START] + START_ER_INT);
+ 			wake_int |= v;
+-- 
+2.53.0
+

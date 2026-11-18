@@ -23,7 +23,9 @@ m() { $T msg "$@" | grep -v "^stale" | grep -v "status 0$"; }
 fev() { $T fev $SH "$@" | grep -v "^stale" | grep -v "status 0$"; }
 sh32() { $B devmem $((SH + $1)) 32 $2; }
 au() { $B devmem $((A + $1)) 32 $2; }
-amps() { killall gpioset 2>/dev/null; gpioset -z -c gpiochip6 15=$1 16=$2; }
+# The GPO bank by its label: its gpiochip number moves when an earlier chip (STMPE) is missing
+GPO=$(gpiodetect | awk '/\[gpo_p3\]/ { print $1 }')
+amps() { killall gpioset 2>/dev/null; gpioset -z -c "$GPO" 15=$1 16=$2; }
 
 case "$1" in
 headphones|hp)
