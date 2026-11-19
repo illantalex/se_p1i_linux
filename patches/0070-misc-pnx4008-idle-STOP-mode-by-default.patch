@@ -1,0 +1,60 @@
+From 89ffde544aab14e08a09fb973eb35d0ddd785160 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Thu, 19 Nov 2026 06:40:43 +0100
+Subject: [PATCH 70/70] misc: pnx4008-idle: STOP mode by default
+
+STOP is now limited to times the display is off, its update module held
+meanwhile, and stays away while USB is connected (PM QoS) or the audio
+DSP's PLL runs. Overnight on the Sony Ericsson P1i it ran through
+(351645 STOPs, screen fine afterwards; standby current 39.2 mA against
+43.3 mA in direct run). Turn it on by default; "stop" still switches it
+off.
+
+The bus master handshake did not help against the display freeze;
+say so.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index db61db5cb..b717d9b77 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -35,7 +35,7 @@
+  * and all channels are marked dirty for a full redraw. A DUM busy for over a second is
+  * taken as stuck already and no longer keeps STOP away.
+  *
+- * Parameters: enable (direct run idle), stop (STOP mode, off by default), and counters.
++ * Parameters: enable (direct run idle), stop (STOP mode), and counters.
+  */
+ 
+ #include <linux/io.h>
+@@ -108,9 +108,9 @@ static unsigned long handshake_timeouts;
+ module_param(handshake_timeouts, ulong, 0444);
+ MODULE_PARM_DESC(handshake_timeouts, "bus masters did not acknowledge (full speed instead)");
+ 
+-static bool stop;
++static bool stop = true;
+ module_param(stop, bool, 0644);
+-MODULE_PARM_DESC(stop, "STOP mode when nothing is due for 20 ms (experimental)");
++MODULE_PARM_DESC(stop, "STOP mode when nothing is due for 20 ms and the display is off");
+ 
+ static unsigned long entries, stops, stop_pending, pll_slow;
+ module_param(entries, ulong, 0444);
+@@ -231,8 +231,9 @@ static bool pll_locked(void)
+  * Symbian's step before direct run (and so before STOP): write 0x84 to 0x40004008 and wait
+  * until 0x40004010 shows bits 2 and 7, then DSPCLKCTRL bit 6; the reverse afterwards, 0x84
+  * to 0x4000400c. Probably asks two AHB masters (DMA engines: the display update module,
+- * USB?) to pause. Without it the display engine stopped for good once after STOP sessions;
+- * whether this is the cause is not tested yet ("handshake", off by default).
++ * USB?) to pause. Tried against the display engine freezing after STOP sessions, it did not
++ * help (the cause was STOP during a display transfer); kept as an option ("handshake", off
++ * by default).
+  */
+ static bool masters_pause(void)
+ {
+-- 
+2.53.0
+

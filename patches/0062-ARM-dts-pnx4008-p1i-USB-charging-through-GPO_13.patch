@@ -1,7 +1,7 @@
 From b47528f5626df0c6e4fab0ce32d4bcaf64c5b190 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 15 Nov 2026 20:44:15 +0100
-Subject: [PATCH 62/69] ARM: dts: pnx4008-p1i: USB charging through GPO_13
+Subject: [PATCH 62/70] ARM: dts: pnx4008-p1i: USB charging through GPO_13
 
 GPO_13 reaches the modem's USB_CH input (GPIO47) through R2833 and an
 OR gate; the modem charges from VBUS on its rising edge, at the limit

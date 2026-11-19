@@ -1,7 +1,7 @@
 From 6d0488786367145fc3ea015f152b0a1f1509f408 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 17 Nov 2026 21:21:48 +0100
-Subject: [PATCH 65/69] misc: pnx4008-idle: no STOP in the middle of a display
+Subject: [PATCH 65/70] misc: pnx4008-idle: no STOP in the middle of a display
  transfer
 
 When STOP stopped the bus and put the SDRAM into self-refresh while the

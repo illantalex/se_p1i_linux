@@ -1,7 +1,7 @@
 From a5603d0502d6fb46499454b356e9293e065e4a97 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 3 Nov 2026 23:21:34 +0100
-Subject: [PATCH 55/69] ARM: dts: pnx4008-p1i: idle in direct run mode
+Subject: [PATCH 55/70] ARM: dts: pnx4008-p1i: idle in direct run mode
 
 Add the pnx4008-idle node (PWR_CTRL, HCLKPLL_CTRL, SDRAM controller)
 and the SDRAM controller's address range to the soc bus.
