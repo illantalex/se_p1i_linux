@@ -1,0 +1,44 @@
+From d5dfc91039e7a5dc622056d4ca03f4a66a9e0363 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 22 Nov 2026 20:40:11 +0100
+Subject: [PATCH 71/72] ALSA: arm: pnx4008-dsp: whole periods only
+
+The poll timer copies one period (one DSP half) at a time and wraps only
+when the position reaches the end of the buffer. With a buffer that is not
+a whole number of periods (aplay -B 2900000 gives 507.5 periods at
+44.1 kHz) the last copy read up to 504 bytes past the end of the vmalloc
+buffer: a fault in the timer interrupt, "Fatal exception in interrupt".
+
+Constrain the number of periods to an integer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/arm/pnx4008-dsp.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 6e879de21..309453f7a 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -342,9 +342,18 @@ static const struct snd_pcm_hardware pnx4008_dsp_hw = {
+ static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
+ {
+ 	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
++	int ret;
+ 
+ 	substream->runtime->hw = pnx4008_dsp_hw;
+ 	dsp->substream = substream;
++	/*
++	 * Whole periods only: the poll copies one period at a time and wraps at the buffer's
++	 * end, so a buffer of e.g. 507.5 periods (aplay -B 2900000) had it read past the end
++	 * of the vmalloc buffer (a fault in the timer interrupt: panic).
++	 */
++	ret = snd_pcm_hw_constraint_integer(substream->runtime, SNDRV_PCM_HW_PARAM_PERIODS);
++	if (ret < 0)
++		return ret;
+ 	return snd_pcm_hw_constraint_list(substream->runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
+ 					  &pnx4008_dsp_rate_list);
+ }
+-- 
+2.53.0
+

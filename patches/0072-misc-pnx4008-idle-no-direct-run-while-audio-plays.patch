@@ -1,0 +1,129 @@
+From 464d9676000e707efd761319e6e2195a11abccda Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 22 Nov 2026 20:40:20 +0100
+Subject: [PATCH 72/72] misc: pnx4008-idle: no direct run while audio plays
+
+Adopted-stream playback crackled with direct-run idle: with the bus at
+13 MHz between interrupts, the audio DSP's stream and outputs starve.
+Without direct run the same tone plays clean.
+
+The DSP driver files a CPU latency PM QoS request of 0 while its PCM
+device is open; the idle driver skips direct run while a request is below
+RUN_LATENCY_US (100 us), counted in run_qos. The USB device controller's
+request while the cable is in now keeps the full bus speed too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 18 ++++++++++++++++--
+ sound/arm/pnx4008-dsp.c     | 17 ++++++++++++++---
+ 2 files changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index b717d9b77..971203917 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -14,7 +14,9 @@
+  *   refresh period back.
+  *
+  * A faster refresh at 104 MHz is harmless, so the refresh changes first on the way down and
+- * last on the way up.
++ * last on the way up. No direct run while a CPU latency PM QoS request is below
++ * RUN_LATENCY_US: the audio DSP driver files one while its PCM device is open (with the
++ * bus at 13 MHz the playback crackles), the USB device controller while the cable is in.
+  *
+  * Further, as Symbian does when nothing is due for a while: STOP mode (pnx4008-stop.S),
+  * with the HCLK PLL off and the SDRAM in self-refresh. Only the START controller's enabled
+@@ -85,6 +87,7 @@
+ #define PWM_ENABLE		BIT(31)	/* backlight PWM: disabled = display off */
+ #define STOP_MIN_TICKS		655	/* 20 ms at 32768 Hz */
+ #define STOP_LATENCY_US		5000	/* the PLL has to lock again */
++#define RUN_LATENCY_US		100	/* below: no direct run either (full bus speed) */
+ #define PLL_LOCK_POLLS		20000
+ 
+ void pnx4008_stop(void __iomem *pwr_ctrl, void __iomem *hclkpll, void __iomem *emc);
+@@ -132,6 +135,9 @@ MODULE_PARM_DESC(wake_pin, "START pin sources seen at STOP's end (ORed; write 0)
+ module_param(wake_timer, ulong, 0444);
+ MODULE_PARM_DESC(wake_timer, "STOPs ended with the system timer's event among the sources");
+ 
++static unsigned long run_qos;
++module_param(run_qos, ulong, 0444);
++MODULE_PARM_DESC(run_qos, "direct run skipped: a driver needs the full bus speed (audio, USB)");
+ static unsigned long stop_qos;
+ module_param(stop_qos, ulong, 0444);
+ MODULE_PARM_DESC(stop_qos, "STOP skipped: a driver asked for a short wake-up latency");
+@@ -278,7 +284,15 @@ static void pnx4008_idle(void)
+ 		return;
+ 	}
+ 
+-	/* Normal run mode from a locked PLL, or leave the clocks alone */
++	/*
++	 * Normal run mode from a locked PLL, or leave the clocks alone. Also while a driver
++	 * asks for a short latency: with the bus at 13 MHz, the audio DSP's stream crackles.
++	 */
++	if (READ_ONCE(enable) && cpu_latency_qos_limit() < RUN_LATENCY_US) {
++		run_qos++;
++		cpu_do_idle();
++		return;
++	}
+ 	if (!READ_ONCE(enable) || !pll_locked() || !masters_pause()) {
+ 		cpu_do_idle();
+ 		return;
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 309453f7a..3599c4d44 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -57,6 +57,7 @@
+ #include <linux/of.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_qos.h>
+ #include <linux/spinlock.h>
+ #include <sound/control.h>
+ #include <sound/core.h>
+@@ -145,6 +146,7 @@ struct pnx4008_dsp {
+ 	unsigned int rate;		/* the stream's input rate on the DSP */
+ 	void __iomem *params;		/* shared buffer + 0x400, NULL if not mapped */
+ 	unsigned int source;		/* SOURCE_PCM or SOURCE_FM */
++	struct pm_qos_request qos;	/* full bus speed while the PCM device is open */
+ };
+ 
+ enum { SOURCE_PCM, SOURCE_FM };
+@@ -346,16 +348,24 @@ static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
+ 
+ 	substream->runtime->hw = pnx4008_dsp_hw;
+ 	dsp->substream = substream;
++	/*
++	 * No direct run idle (13 MHz bus) while playing: the DSP's own reads of the stream
++	 * and its outputs crackle with the slow bus (pnx4008-idle checks the CPU latency
++	 * requests)
++	 */
++	cpu_latency_qos_add_request(&dsp->qos, 0);
+ 	/*
+ 	 * Whole periods only: the poll copies one period at a time and wraps at the buffer's
+ 	 * end, so a buffer of e.g. 507.5 periods (aplay -B 2900000) had it read past the end
+ 	 * of the vmalloc buffer (a fault in the timer interrupt: panic).
+ 	 */
+ 	ret = snd_pcm_hw_constraint_integer(substream->runtime, SNDRV_PCM_HW_PARAM_PERIODS);
++	if (!ret)
++		ret = snd_pcm_hw_constraint_list(substream->runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
++						 &pnx4008_dsp_rate_list);
+ 	if (ret < 0)
+-		return ret;
+-	return snd_pcm_hw_constraint_list(substream->runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
+-					  &pnx4008_dsp_rate_list);
++		cpu_latency_qos_remove_request(&dsp->qos);
++	return ret;
+ }
+ 
+ static int pnx4008_dsp_close(struct snd_pcm_substream *substream)
+@@ -364,6 +374,7 @@ static int pnx4008_dsp_close(struct snd_pcm_substream *substream)
+ 
+ 	hrtimer_cancel(&dsp->timer);
+ 	dsp->substream = NULL;
++	cpu_latency_qos_remove_request(&dsp->qos);
+ 	return 0;
+ }
+ 
+-- 
+2.53.0
+

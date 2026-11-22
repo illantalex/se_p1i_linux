@@ -1,7 +1,7 @@
 From dfe6e36fa7228fb94ff5f798bf16c0b292fc9203 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 17 Nov 2026 21:21:49 +0100
-Subject: [PATCH 66/70] ARM: dts: pnx4008-p1i: display update module registers
+Subject: [PATCH 66/72] ARM: dts: pnx4008-p1i: display update module registers
  for idle
 
 The idle code holds the DUM's channels around STOP: map the DUM's main
