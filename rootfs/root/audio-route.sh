@@ -13,7 +13,7 @@
 #   speaker; Q15) with message 31; the other amplifier on.
 #
 # GAIN: Q15 (default 0x312c headphones, 0x27dc speaker, as Symbian; 0x7fff = maximum).
-# The amplifier GPIOs stay held by a background gpioset.
+# The amplifier and DAC GPIOs stay held by a background gpioset.
 cd "$(dirname "$0")"
 T=./dsptool
 SH=0x08000000
@@ -25,7 +25,8 @@ sh32() { $B devmem $((SH + $1)) 32 $2; }
 au() { $B devmem $((A + $1)) 32 $2; }
 # The GPO bank by its label: its gpiochip number moves when an earlier chip (STMPE) is missing
 GPO=$(gpiodetect | awk '/\[gpo_p3\]/ { print $1 }')
-amps() { killall gpioset 2>/dev/null; gpioset -z -c "$GPO" 15=$1 16=$2; }
+# GPO_14 DAC_ON with them: off after Symbian powered the DSP down (the driver restarts it)
+amps() { killall gpioset 2>/dev/null; gpioset -z -c "$GPO" 14=1 15=$1 16=$2; }
 
 case "$1" in
 headphones|hp)

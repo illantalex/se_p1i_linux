@@ -11,6 +11,9 @@
  *   dsptool regs                       show the host-port and clock registers
  *   dsptool boot CODE DATA SHARED      reset the DSP, load the program/data images, start
  *                                      it and send message 11 (shared buffer address)
+ *   dsptool restart SHARED             restart the DSP on the program and data already in it
+ *                                      (after Symbian's standby): PMU shutdown bits cleared
+ *                                      in reset, reset released, message 11
  *   dsptool msg TYPE P0 P1 [SUB]       send a message, wait for and print the reply
  *   dsptool rep                        print pending replies (REP0-2), if any
  *   dsptool fev SHARED H0 .. H5 [swap] message 6 with a Function Enable Vector (6 halfwords
@@ -318,6 +321,28 @@ static void boot(const char *code_path, const char *data_path, uint32_t shared, 
 	msg(11, 0, shared >> 16, shared & 0xFFFF);
 }
 
+/*
+ * Restart the DSP on the program and data Symbian loaded, without loading the images: its
+ * PMU shutdown bits cleared in reset (as boot() does), reset released, message 11. After
+ * Symbian's standby the AHB master stays shut down otherwise.
+ */
+static void restart(uint32_t shared)
+{
+	static const uint16_t zero = 0;
+	int i;
+
+	power_up();
+	download(&zero, 1, MEM_DATA, PMU_SHUTDOWN);
+	download(&zero, 1, MEM_DATA, PMU_SHUTDOWN_BTDMP);
+	start();
+	for (i = 0; i < 1000 && !(rd(PSTS) & PSTS_REP0); i++)
+		delay_us(1000);
+	printf("started (%d ms):\n", i);
+	regs();
+	rep("start-up notification");
+	msg(11, 0, shared >> 16, shared & 0xFFFF);
+}
+
 static volatile uint16_t *map_shared(int fd, uint32_t shared)
 {
 	void *p = mmap(NULL, SHARED_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, shared);
@@ -596,7 +621,8 @@ int main(int argc, char **argv)
 			"msg TYPE P0 P1 [SUB] | fev SHARED H0..H5 [swap] | sem MS |\n"
 			"       tone SHARED AREA HALF SEMIN SEMOUT MS [STEP [PMASK]] | load FILE PHYS |\n"
 			"       modules SHARED ADDR1 ADDR2 | restore SHARED FILE OFF LEN |\n"
-			"       play SHARED AREA HALF SEMIN SEMOUT FILE | save SHARED FILE\n");
+			"       play SHARED AREA HALF SEMIN SEMOUT FILE | save SHARED FILE |\n"
+			"       restart SHARED\n");
 		return 1;
 	}
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -611,6 +637,8 @@ int main(int argc, char **argv)
 		regs();
 	} else if (!strcmp(argv[1], "rep")) {
 		rep("pending");
+	} else if (!strcmp(argv[1], "restart") && argc == 3) {
+		restart(strtoul(argv[2], NULL, 0));
 	} else if (!strcmp(argv[1], "boot") && argc == 5) {
 		boot(argv[2], argv[3], strtoul(argv[4], NULL, 0), fd);
 	} else if (!strcmp(argv[1], "fev") && argc >= 9) {

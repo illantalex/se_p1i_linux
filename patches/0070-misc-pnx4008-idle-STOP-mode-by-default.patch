@@ -1,7 +1,7 @@
 From 89ffde544aab14e08a09fb973eb35d0ddd785160 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Thu, 19 Nov 2026 06:40:43 +0100
-Subject: [PATCH 70/72] misc: pnx4008-idle: STOP mode by default
+Subject: [PATCH 70/73] misc: pnx4008-idle: STOP mode by default
 
 STOP is now limited to times the display is off, its update module held
 meanwhile, and stays away while USB is connected (PM QoS) or the audio

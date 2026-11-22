@@ -466,11 +466,12 @@
 		audio-dsp@400c0000 {
 			compatible = "nxp,pnx4008-dsp-pcm";
 			/*
-			 * APBP, DSPPLLCTRL and DSPCLKCTRL, the PCM halves, and the shared
-			 * buffer's parameters (status at 0x440, FEV at 0x810, message 52's
-			 * block at 0xba4)
+			 * APBP, DSPPLLCTRL to AUDIOPLLCTRL, the PCM halves, and the shared
+			 * buffer's parameters (status at 0x440, modules block at 0x800, FEV
+			 * at 0x810, filter blocks at 0x85c and 0x99c, message 52's block at
+			 * 0xba4)
 			 */
-			reg = <0x400c0000 0x40>, <0x400e8060 0x8>, <0x08001000 0x7e0>,
+			reg = <0x400c0000 0x40>, <0x400e8060 0x10>, <0x08001000 0x7e0>,
 			      <0x08000400 0x800>;
 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
 			memory-region = <&dsp_symbian>;

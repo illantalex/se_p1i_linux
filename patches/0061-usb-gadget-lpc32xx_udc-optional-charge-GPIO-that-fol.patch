@@ -1,7 +1,7 @@
 From daa15a4c9d88d8c478a8cfaf50e07c0ef0b719ff Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 15 Nov 2026 20:44:15 +0100
-Subject: [PATCH 61/72] usb: gadget: lpc32xx_udc: optional charge GPIO that
+Subject: [PATCH 61/73] usb: gadget: lpc32xx_udc: optional charge GPIO that
  follows VBUS
 
 On the Sony Ericsson P1i the modem runs the battery charger. It starts

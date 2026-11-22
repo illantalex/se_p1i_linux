@@ -1,7 +1,7 @@
 From 5e1fac105b130711b3fab245030f7bb79998b691 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 17 Nov 2026 21:21:48 +0100
-Subject: [PATCH 63/72] backlight: pwm_bl: optional delay between PWM off and
+Subject: [PATCH 63/73] backlight: pwm_bl: optional delay between PWM off and
  power supply off
 
 On the Sony Ericsson P1i the backlight's boost converter output stays

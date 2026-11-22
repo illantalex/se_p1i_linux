@@ -1,7 +1,7 @@
 From 63911f717ed33a385e9c9910e1e569778fbc8565 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 4 Nov 2026 22:20:13 +0100
-Subject: [PATCH 56/72] misc: pnx4008-idle: STOP mode when nothing is due for
+Subject: [PATCH 56/73] misc: pnx4008-idle: STOP mode when nothing is due for
  20 ms
 
 What the PNX4008's boot firmware (Symbian's PowerControlExtension)

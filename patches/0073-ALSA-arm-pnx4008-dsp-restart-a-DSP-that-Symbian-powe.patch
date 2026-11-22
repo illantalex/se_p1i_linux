@@ -1,0 +1,285 @@
+From 8ae6db82e5dc3eb5675753295e2e876843519b60 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Sun, 22 Nov 2026 21:16:33 +0100
+Subject: [PATCH 73/73] ALSA: arm: pnx4008-dsp: restart a DSP that Symbian
+ powered down
+
+When nothing has played for a while, Symbian puts the DSP into standby
+(message 3 (1)) and switches its PLLs off. Standby sets the module
+shutdown bits in the DSP's PMU; only the core and the host port come
+back on an interrupt, and the firmware never clears the AHB master and
+DMA bits. A resume as Symbian's leaves a DSP that answers messages but
+cannot reach the shared buffer or SDRAM.
+
+In that case probe now restarts the DSP on the program and data Symbian
+loaded: PLLs and clocks on (the DSP PLL shows no lock before the clock
+bits), power-up with the DSP held in reset, the PMU shutdown bits
+cleared through the host port, reset released, then message 11 (shared
+buffer), 12 (modules in the reserved area) and the output filter blocks
+Symbian keeps in the shared buffer (16, 17: without 17 the speaker is
+barely audible). The DSP then gets the idle-DSP PCM setup.
+
+The second reg now reaches AUDIOPLLCTRL (0x400e806c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts |   9 +-
+ sound/arm/pnx4008-dsp.c           | 148 +++++++++++++++++++++++++++---
+ 2 files changed, 141 insertions(+), 16 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index 016570e08..db708c107 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -466,11 +466,12 @@ usb_transceiver: usb-transceiver@2c {
+ 		audio-dsp@400c0000 {
+ 			compatible = "nxp,pnx4008-dsp-pcm";
+ 			/*
+-			 * APBP, DSPPLLCTRL and DSPCLKCTRL, the PCM halves, and the shared
+-			 * buffer's parameters (status at 0x440, FEV at 0x810, message 52's
+-			 * block at 0xba4)
++			 * APBP, DSPPLLCTRL to AUDIOPLLCTRL, the PCM halves, and the shared
++			 * buffer's parameters (status at 0x440, modules block at 0x800, FEV
++			 * at 0x810, filter blocks at 0x85c and 0x99c, message 52's block at
++			 * 0xba4)
+ 			 */
+-			reg = <0x400c0000 0x40>, <0x400e8060 0x8>, <0x08001000 0x7e0>,
++			reg = <0x400c0000 0x40>, <0x400e8060 0x10>, <0x08001000 0x7e0>,
+ 			      <0x08000400 0x800>;
+ 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
+ 			memory-region = <&dsp_symbian>;
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 3599c4d44..939a3f633 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -52,6 +52,7 @@
+ #include <linux/firmware.h>
+ #include <linux/hrtimer.h>
+ #include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+@@ -65,6 +66,8 @@
+ #include <sound/pcm.h>
+ 
+ /* Host port (APBP), 16-bit registers */
++#define APBP_PDATA	0x00	/* DSP memory through the port: data, address */
++#define APBP_PADR	0x04
+ #define APBP_PCFG	0x08
+ #define APBP_PSTS	0x0c
+ #define APBP_PSEM	0x10	/* ARM -> DSP semaphores */
+@@ -74,7 +77,11 @@
+ #define APBP_CMD(n)	(0x20 + 8 * (n))
+ #define APBP_REP(n)	(0x24 + 8 * (n))
+ 
++#define PCFG_RESET	BIT(0)	/* DSP held in reset */
++#define PCFG_AUTOINC	BIT(1)
+ #define PCFG_REP0_IE	BIT(9)
++#define PCFG_MEM	GENMASK(15, 12)	/* 0: data memory */
++#define PSTS_WR_BUSY	BIT(1)
+ #define PSTS_REP0	BIT(10)
+ #define PSTS_REP_ALL	(BIT(10) | BIT(11) | BIT(12))
+ #define PSTS_CMD0	BIT(13)
+@@ -95,6 +102,24 @@
+ 
+ #define DSPCLKCTRL_REQ	BIT(9)	/* DSP clock request, held while setting PSEM */
+ 
++/* Bringing back a DSP that Symbian powered down (pnx4008_dsp_restart) */
++#define DSPPLL_ON	0x0001001e	/* DSPPLLCTRL as Symbian runs it */
++#define DSPCLK_ISOLATE	BIT(7)	/* DSPCLKCTRL: set by Symbian's power-down */
++#define DSPCLK_ON	(BIT(2) | BIT(3))
++#define DSPCLK_HOSTIF	(BIT(5) | BIT(12))	/* host interface clocks */
++#define AUDIOPLL_OFF	0x0c	/* from DSPPLLCTRL */
++#define AUDIOPLL_ON	0x00603e04
++#define PMU_SHUTDOWN	0x8086	/* DSP PMU: module shutdown bits, kept through a reset */
++#define PMU_SHUTDOWN_BTDMP	0x809a
++#define MSG_SHARED	11	/* the shared buffer's physical address (high, low) */
++#define MSG_MODULES	12	/* where the codec module and the SRC tables are: block */
++#define MODULES_SHARED	0x800
++#define MSG_FILTER_A	16	/* output filter blocks Symbian keeps in the shared buffer */
++#define FILTER_A_SHARED	0x85c
++#define MSG_FILTER_B	17
++#define FILTER_B_SHARED	0x99c
++#define FILTER_BYTES	0x78
++
+ #define STREAM_SEM	BIT(2)	/* area 0 semaphore, both directions */
+ /* The mapped parameter window: shared buffer + 0x400 to 0xbff */
+ #define PARAMS_OFF	0x400
+@@ -147,6 +172,8 @@ struct pnx4008_dsp {
+ 	void __iomem *params;		/* shared buffer + 0x400, NULL if not mapped */
+ 	unsigned int source;		/* SOURCE_PCM or SOURCE_FM */
+ 	struct pm_qos_request qos;	/* full bus speed while the PCM device is open */
++	phys_addr_t shared;		/* the shared buffer, 0 if the window is not mapped */
++	phys_addr_t modules;		/* the reserved area for the modules, 0 if none */
+ };
+ 
+ enum { SOURCE_PCM, SOURCE_FM };
+@@ -266,6 +293,7 @@ static void pnx4008_dsp_load_modules(struct pnx4008_dsp *dsp)
+ 		dev_warn(dsp->dev, "no memory-region for the DSP modules\n");
+ 		return;
+ 	}
++	dsp->modules = rmem->base;
+ 	mem = devm_memremap(dsp->dev, rmem->base, rmem->size, MEMREMAP_WC);
+ 	if (IS_ERR(mem)) {
+ 		dev_warn(dsp->dev, "cannot map the DSP modules: %ld\n", PTR_ERR(mem));
+@@ -522,6 +550,98 @@ static const struct snd_kcontrol_new pnx4008_dsp_source_ctl = {
+ 	.put = pnx4008_dsp_source_put,
+ };
+ 
++/* One word into the DSP's data memory through the host port, the DSP held in reset. */
++static void pnx4008_dsp_poke(struct pnx4008_dsp *dsp, u16 addr, u16 val)
++{
++	u32 clk = readl(dsp->dspclkctrl);
++	int i;
++
++	writel(clk & ~DSPCLK_HOSTIF, dsp->dspclkctrl);
++	udelay(1);
++	writel(clk | DSPCLK_HOSTIF, dsp->dspclkctrl);
++	apbp_wr(dsp, APBP_PCFG, apbp_rd(dsp, APBP_PCFG) | PCFG_RESET);
++	udelay(1);
++	apbp_wr(dsp, APBP_PCFG, (apbp_rd(dsp, APBP_PCFG) & ~PCFG_MEM) | PCFG_AUTOINC);
++	apbp_wr(dsp, APBP_PADR, addr);
++	apbp_wr(dsp, APBP_PDATA, val);
++	for (i = 0; i < 1000 && (apbp_rd(dsp, APBP_PSTS) & PSTS_WR_BUSY); i++)
++		udelay(1);
++}
++
++/*
++ * Symbian puts the DSP into standby (message 3 (1)) and switches its PLLs off when nothing
++ * has played for a while. Standby shuts the DSP's modules down in its PMU, and nothing in
++ * the firmware brings the AHB master and the DMA back: a resume (message 3 (2)) leaves a
++ * DSP that answers messages but cannot reach the shared buffer or SDRAM. So restart it on
++ * the firmware and data Symbian loaded, as dspbootldd's exports do around a boot, with
++ * the PMU's shutdown bits cleared in reset; then the start-up handshake (message 11), the
++ * modules (12) and the output filters (16, 17: without 17 the speaker output is barely
++ * audible), from the blocks Symbian keeps in the shared buffer. The DSP is then idle.
++ */
++static int pnx4008_dsp_restart(struct pnx4008_dsp *dsp)
++{
++	void __iomem *block = dsp->params + MODULES_SHARED - PARAMS_OFF;
++	u32 clk, v;
++	int i, ret;
++
++	if (!dsp->shared || !dsp->modules)
++		return -ENODEV;
++
++	/*
++	 * PLLs on, the DSP's clock on and its host port isolation off, as Symbian's resume
++	 * (the DSP PLL shows no lock until the clock bits are on)
++	 */
++	writel(DSPPLL_ON, dsp->dsppllctrl);
++	writel((readl(dsp->dspclkctrl) & ~DSPCLK_ISOLATE) | DSPCLK_ON, dsp->dspclkctrl);
++	if (readl_poll_timeout(dsp->dsppllctrl, v, v & DSPPLL_LOCK, 100, 20000))
++		return -ETIMEDOUT;
++	writel(AUDIOPLL_ON, dsp->dsppllctrl + AUDIOPLL_OFF);
++	usleep_range(50000, 60000);
++
++	/* dspbootldd #16: power, reset held */
++	clk = readl(dsp->dspclkctrl) & ~BIT(6);
++	writel(clk, dsp->dspclkctrl);
++	clk |= BIT(3) | BIT(4);
++	writel(clk, dsp->dspclkctrl);
++	udelay(1);
++	clk |= DSPCLK_HOSTIF;
++	writel(clk, dsp->dspclkctrl);
++	clk |= BIT(14);
++	writel(clk, dsp->dspclkctrl);
++	apbp_wr(dsp, APBP_PCFG, apbp_rd(dsp, APBP_PCFG) | PCFG_RESET);
++	udelay(1);
++
++	pnx4008_dsp_poke(dsp, PMU_SHUTDOWN, 0);
++	pnx4008_dsp_poke(dsp, PMU_SHUTDOWN_BTDMP, 0);
++
++	/* #15: release reset; the firmware posts an empty start-up notification */
++	clk = readl(dsp->dspclkctrl);
++	writel(clk & ~DSPCLK_HOSTIF, dsp->dspclkctrl);
++	udelay(1);
++	writel((clk & ~DSPCLK_HOSTIF) | BIT(13), dsp->dspclkctrl);
++	writel(clk | BIT(13) | DSPCLK_HOSTIF, dsp->dspclkctrl);
++	apbp_wr(dsp, APBP_PCFG, apbp_rd(dsp, APBP_PCFG) & ~PCFG_RESET);
++	for (i = 0; i < 100 && !(apbp_rd(dsp, APBP_PSTS) & PSTS_REP0); i++)
++		usleep_range(1000, 2000);
++
++	ret = pnx4008_dsp_msg(dsp, MSG_SHARED, upper_16_bits(dsp->shared),
++			      lower_16_bits(dsp->shared));
++	if (ret)
++		return ret;
++	writew(1, block);
++	writew(1, block + 2);
++	writew(upper_16_bits(dsp->modules + FW_CODEC_OFF), block + 4);
++	writew(lower_16_bits(dsp->modules + FW_CODEC_OFF), block + 6);
++	writew(upper_16_bits(dsp->modules + FW_SRC_OFF), block + 8);
++	writew(lower_16_bits(dsp->modules + FW_SRC_OFF), block + 10);
++	ret = pnx4008_dsp_msg(dsp, MSG_MODULES, 6, MODULES_SHARED);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_FILTER_A, FILTER_BYTES, FILTER_A_SHARED);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_FILTER_B, FILTER_BYTES, FILTER_B_SHARED);
++	return ret;
++}
++
+ /*
+  * An idle DSP (no stream left by Symbian): message 52's block as Symbian keeps it (0x2000,
+  * zeros, and the message number in the last halfword), then slot 1 as PCM on the music
+@@ -557,7 +677,8 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	struct pnx4008_dsp *dsp;
+ 	struct snd_card *card;
+ 	struct snd_pcm *pcm;
+-	bool fm_handover = false, idle = false;
++	bool fm_handover = false, idle = false, powered_down = false;
++	struct resource *res;
+ 	int ret;
+ 
+ 	ret = snd_devm_card_new(dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1, THIS_MODULE,
+@@ -589,10 +710,12 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 		return PTR_ERR(dsp->area);
+ 
+ 	/* Optional: the parameter window, for the "Audio Source" control and an idle DSP */
+-	if (platform_get_resource(pdev, IORESOURCE_MEM, 3)) {
+-		dsp->params = devm_platform_ioremap_resource(pdev, 3);
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 3);
++	if (res) {
++		dsp->params = devm_ioremap_resource(dev, res);
+ 		if (IS_ERR(dsp->params))
+ 			return PTR_ERR(dsp->params);
++		dsp->shared = res->start - PARAMS_OFF;
+ 	}
+ 
+ 	if (!(apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)) {
+@@ -606,15 +729,7 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 		dsp->source = SOURCE_FM;
+ 		fm_handover = true;
+ 	} else if (!(readl(dsp->dsppllctrl) & DSPPLL_LOCK)) {
+-		/*
+-		 * Symbian puts the DSP into standby (message 3 (1)) and switches its PLLs off
+-		 * when nothing has played for a while. Standby shuts the DSP's own modules down
+-		 * in its PMU, the AHB master included, which no interrupt brings back: restarting
+-		 * the PLLs makes the DSP answer messages again, but not read the shared buffer.
+-		 * Booting it again with those PMU bits cleared works, but its output does not
+-		 * run yet.
+-		 */
+-		dev_warn(dev, "DSP powered down by Symbian (PLL off): no audio\n");
++		powered_down = true;	/* restarted once the modules are back */
+ 	} else {
+ 		idle = true;
+ 	}
+@@ -625,6 +740,15 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	memset_io(dsp->area, 0, 2 * HALF_BYTES);
+ 	pnx4008_dsp_load_modules(dsp);
+ 
++	if (powered_down) {
++		ret = pnx4008_dsp_restart(dsp);
++		if (ret)
++			dev_warn(dev, "DSP powered down by Symbian, restart failed (%d): no audio\n",
++				 ret);
++		else
++			dev_info(dev, "DSP powered down by Symbian: restarted\n");
++		idle = !ret;
++	}
+ 	if (idle) {
+ 		ret = pnx4008_dsp_idle_setup(dsp);
+ 		if (ret)
+-- 
+2.53.0
+
