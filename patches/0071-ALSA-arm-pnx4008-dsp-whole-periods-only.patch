@@ -1,7 +1,7 @@
 From d5dfc91039e7a5dc622056d4ca03f4a66a9e0363 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 22 Nov 2026 20:40:11 +0100
-Subject: [PATCH 71/73] ALSA: arm: pnx4008-dsp: whole periods only
+Subject: [PATCH 71/77] ALSA: arm: pnx4008-dsp: whole periods only
 
 The poll timer copies one period (one DSP half) at a time and wraps only
 when the position reaches the end of the buffer. With a buffer that is not

@@ -1,0 +1,45 @@
+From 082e0a593709e00b9797bbf50ed184054e4d05b0 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 23 Nov 2026 18:01:04 +0100
+Subject: [PATCH 77/77] misc: pnx4008-idle: release display channels a previous
+ kernel held
+
+A kernel started by kexec found the display update module's channels
+held (dirty enable cleared) by the previous kernel's shutdown, which had
+turned the backlight off: the screen stayed frozen. Symbian hands over
+with them running, so at probe give every configured channel its dirty
+enable back and mark it dirty for a redraw.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/pnx4008-idle.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/drivers/misc/pnx4008-idle.c b/drivers/misc/pnx4008-idle.c
+index 971203917..5c4080ef8 100644
+--- a/drivers/misc/pnx4008-idle.c
++++ b/drivers/misc/pnx4008-idle.c
+@@ -358,6 +358,20 @@ static int pnx4008_idle_probe(struct platform_device *pdev)
+ 			return -ENOMEM;
+ 	}
+ 
++	/*
++	 * A kernel before this one (kexec) may have left the DUM's channels held: its
++	 * shutdown turned the backlight off. Symbian hands over with them running.
++	 */
++	for (i = 0; i < DUM_CHANNELS; i++) {
++		void __iomem *ch = regs[DUMCH] + i * DUM_CH_STRIDE;
++		u32 conf = readl(ch + DUM_CH_CONF);
++
++		if (conf && !(conf & DUM_CH_CONF_DIRTY)) {
++			writel(conf | DUM_CH_CONF_DIRTY, ch + DUM_CH_CONF);
++			writel(DUM_CH_CTRL_SETDIRTY, ch + DUM_CH_CTRL);
++		}
++	}
++
+ 	/* The boot firmware's value for normal run mode */
+ 	refresh_run = readl(regs[EMC] + EMC_REFRESH);
+ 	if (!(readl(regs[PWR]) & PWR_CTRL_NORMAL_RUN) || refresh_run <= EMC_REFRESH_13MHZ) {
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From 8ae6db82e5dc3eb5675753295e2e876843519b60 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 22 Nov 2026 21:16:33 +0100
-Subject: [PATCH 73/73] ALSA: arm: pnx4008-dsp: restart a DSP that Symbian
+Subject: [PATCH 73/77] ALSA: arm: pnx4008-dsp: restart a DSP that Symbian
  powered down
 
 When nothing has played for a while, Symbian puts the DSP into standby

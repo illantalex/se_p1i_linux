@@ -1,0 +1,36 @@
+From 9a3522bd35197fb90162e683aa6f96eaa159775f Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 23 Nov 2026 18:01:04 +0100
+Subject: [PATCH 76/77] media: si470x-i2c: power the receiver down after probe
+
+Probe leaves the chip powered up and tuned, which costs about 17 mA of
+the Sony Ericsson P1i's standby current. Stop it at the end of probe as
+release does; open resets and starts it again. The supply stays on: after
+a power cycle the chip chooses another bus mode and holds the I2C bus.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/radio/si470x/radio-si470x-i2c.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/media/radio/si470x/radio-si470x-i2c.c b/drivers/media/radio/si470x/radio-si470x-i2c.c
+index 8173f0263..5141be901 100644
+--- a/drivers/media/radio/si470x/radio-si470x-i2c.c
++++ b/drivers/media/radio/si470x/radio-si470x-i2c.c
+@@ -479,6 +479,13 @@ static int si470x_i2c_probe(struct i2c_client *client)
+ 		goto err_all;
+ 	}
+ 
++	/*
++	 * Powerdown until the radio is opened (open resets and starts it): powered up
++	 * the chip draws about 17 mA (Sony Ericsson P1i standby). Its supply stays on:
++	 * after a power cycle it chooses another bus mode and holds the I2C bus.
++	 */
++	si470x_stop(radio);
++
+ 	/* register video device */
+ 	retval = video_register_device(&radio->videodev, VFL_TYPE_RADIO,
+ 			radio_nr);
+-- 
+2.53.0
+

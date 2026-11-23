@@ -1,0 +1,91 @@
+From da5778699ef8d8b89f20ffb19f61ac66b41a06d5 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 23 Nov 2026 18:01:04 +0100
+Subject: [PATCH 75/77] media: si470x-i2c: full bus speed while the radio is
+ open
+
+On the Sony Ericsson P1i the receiver's audio reaches the outputs through
+the audio DSP (SUZI line in), whose stream sounds robotic when idle drops
+the bus clock (pnx4008-idle's direct run). Hold a CPU latency PM QoS
+request of 0 from open to release.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/radio/si470x/radio-si470x-i2c.c | 16 ++++++++++++++--
+ drivers/media/radio/si470x/radio-si470x.h     |  2 ++
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/radio/si470x/radio-si470x-i2c.c b/drivers/media/radio/si470x/radio-si470x-i2c.c
+index 56d5238a8..8173f0263 100644
+--- a/drivers/media/radio/si470x/radio-si470x-i2c.c
++++ b/drivers/media/radio/si470x/radio-si470x-i2c.c
+@@ -21,6 +21,7 @@
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/interrupt.h>
++#include <linux/pm_qos.h>
+ 
+ #include "radio-si470x.h"
+ 
+@@ -199,6 +200,12 @@ static int si470x_fops_open(struct file *file)
+ 		return retval;
+ 
+ 	if (v4l2_fh_is_singular_file(file)) {
++		/*
++		 * Full bus speed while the radio plays: on the Sony Ericsson P1i its audio
++		 * goes through the audio DSP (line in), whose stream sounds robotic when
++		 * idle drops the bus clock (pnx4008-idle's direct run)
++		 */
++		cpu_latency_qos_add_request(&radio->qos, 0);
+ 		if (radio->gpio_reset)
+ 			si470x_reset(radio);
+ 
+@@ -216,8 +223,11 @@ static int si470x_fops_open(struct file *file)
+ 	}
+ 
+ done:
+-	if (retval)
++	if (retval) {
++		if (cpu_latency_qos_request_active(&radio->qos))
++			cpu_latency_qos_remove_request(&radio->qos);
+ 		v4l2_fh_release(file);
++	}
+ 	return retval;
+ }
+ 
+@@ -229,9 +239,11 @@ static int si470x_fops_release(struct file *file)
+ {
+ 	struct si470x_device *radio = video_drvdata(file);
+ 
+-	if (v4l2_fh_is_singular_file(file))
++	if (v4l2_fh_is_singular_file(file)) {
+ 		/* stop radio */
+ 		si470x_stop(radio);
++		cpu_latency_qos_remove_request(&radio->qos);
++	}
+ 
+ 	return v4l2_fh_release(file);
+ }
+diff --git a/drivers/media/radio/si470x/radio-si470x.h b/drivers/media/radio/si470x/radio-si470x.h
+index e57ab54a2..d83dc0fbe 100644
+--- a/drivers/media/radio/si470x/radio-si470x.h
++++ b/drivers/media/radio/si470x/radio-si470x.h
+@@ -20,6 +20,7 @@
+ #include <linux/slab.h>
+ #include <linux/input.h>
+ #include <linux/videodev2.h>
++#include <linux/pm_qos.h>
+ #include <linux/mutex.h>
+ #include <media/v4l2-common.h>
+ #include <media/v4l2-ioctl.h>
+@@ -181,6 +182,7 @@ struct si470x_device {
+ #if IS_ENABLED(CONFIG_I2C_SI470X)
+ 	struct i2c_client *client;
+ 	struct gpio_desc *gpio_reset;
++	struct pm_qos_request qos;	/* while open: full bus speed */
+ #endif
+ };
+ 
+-- 
+2.53.0
+

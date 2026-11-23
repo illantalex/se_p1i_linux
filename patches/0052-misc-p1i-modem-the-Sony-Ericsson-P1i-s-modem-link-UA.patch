@@ -1,7 +1,7 @@
 From f17a6a9fe34546796abcc3e74ca836170b7122c4 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 3 Nov 2026 21:52:30 +0100
-Subject: [PATCH 52/73] misc: p1i-modem: the Sony Ericsson P1i's modem link
+Subject: [PATCH 52/77] misc: p1i-modem: the Sony Ericsson P1i's modem link
  (UART3)
 
 The P1i's DB2001 modem talks CAIF serial on UART3, which Symbian sets

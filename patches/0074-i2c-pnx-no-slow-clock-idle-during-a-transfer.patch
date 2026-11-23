@@ -1,0 +1,65 @@
+From a5f5e09fa95fedfb3485390fe8ce643529b299bf Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Mon, 23 Nov 2026 18:01:03 +0100
+Subject: [PATCH 74/77] i2c: pnx: no slow-clock idle during a transfer
+
+On the PNX4008 the controller is clocked from HCLK, which direct-run idle
+(pnx4008-idle) drops from 104 to 13 MHz while the CPU waits for the
+transfer's interrupt. Transfers broken that way timed out, and on the
+Sony Ericsson P1i the Si4703 FM receiver then held SDA low: bus 1 (also
+the STMPE801 GPIO expander) stayed busy until the next Symbian boot.
+
+Hold a CPU latency PM QoS request of 0 for the duration of a transfer;
+pnx4008-idle neither enters direct run nor STOP meanwhile.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/i2c-pnx.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/drivers/i2c/busses/i2c-pnx.c b/drivers/i2c/busses/i2c-pnx.c
+index 50f21cdbe..80cacfd36 100644
+--- a/drivers/i2c/busses/i2c-pnx.c
++++ b/drivers/i2c/busses/i2c-pnx.c
+@@ -23,6 +23,7 @@
+ #include <linux/clk.h>
+ #include <linux/slab.h>
+ #include <linux/of.h>
++#include <linux/pm_qos.h>
+ 
+ #define I2C_PNX_TIMEOUT_DEFAULT		10 /* msec */
+ #define I2C_PNX_SPEED_KHZ_DEFAULT	100
+@@ -46,6 +47,7 @@ struct i2c_pnx_algo_data {
+ 	struct i2c_adapter	adapter;
+ 	int			irq;
+ 	u32			timeout;
++	struct pm_qos_request	qos;	/* held during a transfer */
+ };
+ 
+ enum {
+@@ -520,6 +522,13 @@ i2c_pnx_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+ 		"%s(): entering: %d messages, stat = %04x.\n",
+ 		__func__, num, ioread32(I2C_REG_STS(alg_data)));
+ 
++	/*
++	 * No idle with a slower or stopped bus clock while a transfer runs (PNX4008: the
++	 * controller is clocked from HCLK, which direct-run idle drops from 104 to 13 MHz;
++	 * a Si4703 on the P1i held SDA low after transfers broken that way)
++	 */
++	cpu_latency_qos_add_request(&alg_data->qos, 0);
++
+ 	bus_reset_if_active(alg_data);
+ 
+ 	/* Process transactions in a loop. */
+@@ -597,6 +606,8 @@ i2c_pnx_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+ 	dev_dbg(&alg_data->adapter.dev, "%s(): exiting, stat = %x\n",
+ 		__func__, ioread32(I2C_REG_STS(alg_data)));
+ 
++	cpu_latency_qos_remove_request(&alg_data->qos);
++
+ 	if (completed != num)
+ 		return ((rc < 0) ? rc : -EREMOTEIO);
+ 
+-- 
+2.53.0
+

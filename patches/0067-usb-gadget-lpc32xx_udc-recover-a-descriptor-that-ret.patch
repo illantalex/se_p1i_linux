@@ -1,7 +1,7 @@
 From 62dcfbaa039692e5a4f45d2b115837465609aaa6 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 18 Nov 2026 20:51:03 +0100
-Subject: [PATCH 67/73] usb: gadget: lpc32xx_udc: recover a descriptor that
+Subject: [PATCH 67/77] usb: gadget: lpc32xx_udc: recover a descriptor that
  retired without end of transfer
 
 On the PNX4008 (Sony Ericsson P1i, g_ether) the OUT endpoint stopped for
