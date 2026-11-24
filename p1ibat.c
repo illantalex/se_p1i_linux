@@ -55,7 +55,9 @@
  * message 0x25, method 3: 0 = pressed, 3 = released, then the key code 0x65 (seen with the
  * modem even in its shut-down state). p1ibat reports it as KEY_POWER on a uinput device
  * ("P1i power key", for whatever runs on top), and held for 3 s it reboots, which ends up
- * in Symbian: the way out of Linux without a shell.
+ * in Symbian: the way out of Linux without a shell. A short press switches the display off
+ * and on (backlight bl_power; the keypad light follows it, and with the display off the
+ * idle driver may use STOP mode).
  *
  * Indicator LED and vibrator (both on the modem's power chip) as LED class devices, through
  * uleds: /sys/class/leds/red:indicator and green:indicator (brightness 1 = on, 0 = off; red
@@ -330,6 +332,26 @@ static void power_key_report(int down)
 	(void)!write(uinput_fd, ev, sizeof(ev));
 }
 
+/* Display (and keypad) backlight off or on again: bl_power 4 (powerdown) or 0 */
+#define BL_POWER	"/sys/class/backlight/backlight/bl_power"
+
+static void display_toggle(void)
+{
+	char buf[8] = "";
+	FILE *f = fopen(BL_POWER, "r");
+
+	if (!f)
+		return;
+	if (!fgets(buf, sizeof(buf), f))
+		buf[0] = 0;
+	fclose(f);
+	f = fopen(BL_POWER, "w");
+	if (!f)
+		return;
+	fputs(atoi(buf) ? "0\n" : "4\n", f);
+	fclose(f);
+}
+
 /* One CAIF payload (without length and FCS) */
 static void handle_payload(const uint8_t *p, int n)
 {
@@ -381,8 +403,12 @@ static void handle_payload(const uint8_t *p, int n)
 			power_down_at = now();
 			power_key_report(1);
 		} else if (value == KEY_EVENT_UP && power_down_at) {
+			int short_press = now() - power_down_at < POWER_HOLD_S;
+
 			power_down_at = 0;
 			power_key_report(0);
+			if (short_press)
+				display_toggle();
 		}
 		return;
 	}
