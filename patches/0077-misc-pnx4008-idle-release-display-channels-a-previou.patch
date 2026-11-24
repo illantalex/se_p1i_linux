@@ -1,7 +1,7 @@
 From 082e0a593709e00b9797bbf50ed184054e4d05b0 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 23 Nov 2026 18:01:04 +0100
-Subject: [PATCH 77/77] misc: pnx4008-idle: release display channels a previous
+Subject: [PATCH 77/78] misc: pnx4008-idle: release display channels a previous
  kernel held
 
 A kernel started by kexec found the display update module's channels

@@ -1,7 +1,7 @@
 From 50be42e8e5b073e2c0fccb544fe47e40908a46d7 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Tue, 3 Nov 2026 23:21:34 +0100
-Subject: [PATCH 54/77] misc: pnx4008-idle: wait for interrupts in direct run
+Subject: [PATCH 54/78] misc: pnx4008-idle: wait for interrupts in direct run
  mode
 
 On the PNX4008 the ARM runs at 208 MHz and HCLK (bus, SDRAM) at

@@ -1,7 +1,7 @@
 From da5778699ef8d8b89f20ffb19f61ac66b41a06d5 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 23 Nov 2026 18:01:04 +0100
-Subject: [PATCH 75/77] media: si470x-i2c: full bus speed while the radio is
+Subject: [PATCH 75/78] media: si470x-i2c: full bus speed while the radio is
  open
 
 On the Sony Ericsson P1i the receiver's audio reaches the outputs through

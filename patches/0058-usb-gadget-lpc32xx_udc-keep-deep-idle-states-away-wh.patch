@@ -1,7 +1,7 @@
 From 748c9916327b7d75eede3fad0f99a5827b0b1236 Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 15 Nov 2026 09:09:51 +0100
-Subject: [PATCH 58/77] usb: gadget: lpc32xx_udc: keep deep idle states away
+Subject: [PATCH 58/78] usb: gadget: lpc32xx_udc: keep deep idle states away
  while VBUS is present
 
 On the PNX4008 (Sony Ericsson P1i) the idle code can stop the SoC's

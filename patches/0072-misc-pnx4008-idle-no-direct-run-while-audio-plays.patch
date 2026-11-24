@@ -1,7 +1,7 @@
 From 464d9676000e707efd761319e6e2195a11abccda Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Sun, 22 Nov 2026 20:40:20 +0100
-Subject: [PATCH 72/77] misc: pnx4008-idle: no direct run while audio plays
+Subject: [PATCH 72/78] misc: pnx4008-idle: no direct run while audio plays
 
 Adopted-stream playback crackled with direct-run idle: with the bus at
 13 MHz between interrupts, the audio DSP's stream and outputs starve.

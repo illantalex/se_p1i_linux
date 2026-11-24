@@ -1,7 +1,7 @@
 From a5f5e09fa95fedfb3485390fe8ce643529b299bf Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 23 Nov 2026 18:01:03 +0100
-Subject: [PATCH 74/77] i2c: pnx: no slow-clock idle during a transfer
+Subject: [PATCH 74/78] i2c: pnx: no slow-clock idle during a transfer
 
 On the PNX4008 the controller is clocked from HCLK, which direct-run idle
 (pnx4008-idle) drops from 104 to 13 MHz while the CPU waits for the

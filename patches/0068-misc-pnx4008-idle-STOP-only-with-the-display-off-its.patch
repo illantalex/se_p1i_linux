@@ -1,7 +1,7 @@
 From 2e223db6b494909bd03ee81366f119925d5312fc Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Wed, 18 Nov 2026 20:51:04 +0100
-Subject: [PATCH 68/77] misc: pnx4008-idle: STOP only with the display off, its
+Subject: [PATCH 68/78] misc: pnx4008-idle: STOP only with the display off, its
  updates held meanwhile
 
 Holding the display update module's channels only around each STOP

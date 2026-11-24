@@ -1,7 +1,7 @@
 From 9a3522bd35197fb90162e683aa6f96eaa159775f Mon Sep 17 00:00:00 2001
 From: Illya Antonyuk <illantalex84@gmail.com>
 Date: Mon, 23 Nov 2026 18:01:04 +0100
-Subject: [PATCH 76/77] media: si470x-i2c: power the receiver down after probe
+Subject: [PATCH 76/78] media: si470x-i2c: power the receiver down after probe
 
 Probe leaves the chip powered up and tuned, which costs about 17 mA of
 the Sony Ericsson P1i's standby current. Stop it at the end of probe as

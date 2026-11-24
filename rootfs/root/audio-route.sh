@@ -1,74 +1,21 @@
 #!/bin/sh
-# audio-route.sh headphones|speaker [GAIN]
+# audio-route.sh headphones|speaker [VOLUME]
 #
-# Switch the running DSP playback stream (adopted from Symbian, see snd-pnx4008-dsp)
-# between the speaker and the headphones, the way Symbian does it when the headphones are
-# plugged in or out during playback (regprobe dsptrace 2026-10-18, rom_dump/run_18_10):
+# Switch the DSP's playback route between the speaker and the headphones. The ALSA driver
+# does the switch ("Playback Route" control, since #155): amplifiers, DAC_ON, filters, the
+# outputs and gains as Symbian switches them (regprobe dsptrace 2026-10-18); it also wakes
+# the DSP from standby. Before #155 this script did all that itself through dsptool.
 #
-#   amplifier off (GPO_15 speaker / GPO_16 headphones); FEV with the effect chain off;
-#   audio reg 0x24 = 0x2000000 (mute); gains 0; the output's filter coefficients
-#   (0x85C table) and 0x940; messages 52 and 16; message 70 = output (0x0201 headphones,
-#   0x0000 speaker); 0x24 = 0x80000; headphone output 0x3C (0x2020 on, 0x2002020 off);
-#   FEV of the output; 0x24 = 0; gain of the output (halfword 0x81C headphones, 0x820
-#   speaker; Q15) with message 31; the other amplifier on.
-#
-# GAIN: Q15 (default 0x312c headphones, 0x27dc speaker, as Symbian; 0x7fff = maximum).
-# The amplifier and DAC GPIOs stay held by a background gpioset.
-cd "$(dirname "$0")"
-T=./dsptool
-SH=0x08000000
-A=0x400E8000
-B=busybox
-m() { $T msg "$@" | grep -v "^stale" | grep -v "status 0$"; }
-fev() { $T fev $SH "$@" | grep -v "^stale" | grep -v "status 0$"; }
-sh32() { $B devmem $((SH + $1)) 32 $2; }
-au() { $B devmem $((A + $1)) 32 $2; }
-# The GPO bank by its label: its gpiochip number moves when an earlier chip (STMPE) is missing
-GPO=$(gpiodetect | awk '/\[gpo_p3\]/ { print $1 }')
-# GPO_14 DAC_ON with them: off after Symbian powered the DSP down (the driver restarts it)
-amps() { killall gpioset 2>/dev/null; gpioset -z -c "$GPO" 14=1 15=$1 16=$2; }
-
+# VOLUME: percent (the "Playback Volume" control, default 30 = Symbian's speaker gain; it is
+# kept across routes and standby). amixer cset name='Playback Volume' N works as well.
 case "$1" in
-headphones|hp)
-	G=${2:-0x312c}
-	amps 0 0
-	fev 0 0x100 0 0 0 0
-	au 0x24 0x2000000
-	sh32 0x81c 0; sh32 0x820 0; sh32 0x84c 0; sh32 0x850 0
-	sh32 0x864 0x01100110; sh32 0x868 0x7ffc7ffc; sh32 0x870 0x0050fffb
-	sh32 0x874 0x40270002; sh32 0x940 0x20200000
-	m 52 0x10 0xba4
-	m 16 0x78 0x85c
-	m 70 0x0201 0x0101
-	au 0x24 0x80000
-	au 0x3c 0x2020
-	fev 0 0x100 0x0080 0x48b4 0 0
-	au 0x24 0
-	sh32 0x81c $G
-	m 31 7 0x81c
-	amps 0 1
-	;;
-speaker|spk)
-	G=${2:-0x27dc}
-	amps 0 0
-	fev 0 0x100 0 0 0 0
-	au 0x24 0x2000000
-	au 0x3c 0x2002020
-	sh32 0x81c 0; sh32 0x820 0
-	sh32 0x864 0x01430143; sh32 0x868 0x20272027; sh32 0x870 0x0050fff9
-	sh32 0x874 0x7fff0002; sh32 0x940 0
-	m 52 0x10 0xba4
-	m 16 0x78 0x85c
-	m 70 0 0x101
-	au 0x24 0x80000
-	fev 0 0x100 0x00ce 0x8034 0 0
-	au 0x24 0
-	sh32 0x820 $G
-	m 31 7 0x81c
-	amps 1 0
-	;;
+headphones|hp)	R=Headphones ;;
+speaker|spk)	R=Speaker ;;
 *)
-	echo "usage: $0 headphones|speaker [GAIN]" >&2
+	echo "usage: $0 headphones|speaker [VOLUME]" >&2
 	exit 1
 	;;
 esac
+amixer -q cset name='Playback Route' "$R" || exit 1
+[ -n "$2" ] && amixer -q cset name='Playback Volume' "$2"
+exit 0

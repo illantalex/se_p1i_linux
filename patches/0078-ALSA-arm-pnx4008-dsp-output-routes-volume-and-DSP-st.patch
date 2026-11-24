@@ -1,0 +1,596 @@
+From d79e02f0960e5d74dcbbc8024066410e36167ce7 Mon Sep 17 00:00:00 2001
+From: Illya Antonyuk <illantalex84@gmail.com>
+Date: Tue, 24 Nov 2026 21:10:30 +0100
+Subject: [PATCH 78/78] ALSA: arm: pnx4008-dsp: output routes, volume and DSP
+ standby
+
+With the DSP running all the time (adopted or restarted), pnx4008-idle
+never used STOP mode: about 15 mA of standby against far more. Like
+Symbian, put the DSP into standby after standby_delay seconds of silence
+(default 10): amplifiers and DAC off, outputs stopped (message 70, empty
+FEV), message 3 (1), DSP and audio PLLs off. The next open restarts it
+(restart, PCM setup, route, volume), which adds about half a second.
+
+For that the driver now owns the output stage that audio-route.sh used
+to drive from user space: DAC_ON and the speaker and headphone amplifier
+GPIOs, the codec's mute registers (a fifth reg), and a "Playback Route"
+control (Speaker, Headphones) switching as Symbian does. A route change
+also wakes a sleeping DSP. "Playback Volume" (0-100 %, linear gain, dB
+TLV, default 30 % = Symbian's speaker gain) is kept across standby.
+
+Fixes found on the way:
+- a restarted DSP plays with FEV source 0x0100 (ARM PCM1 only): 0x0900
+  also starts its line-in transfers, which wait for an input only
+  message 80 sets up, and the DSP stalled after two halves. 0x0900 stays
+  for a FM handover (line in running).
+- probe checks the DSP PLL first: our own standby left PMASK as for a
+  stream, so after a kexec the DSP was taken for a running one.
+
+Standby is skipped while the FEV's source is line in only (FM radio
+through the DSP, set up from user space).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/boot/dts/pnx4008-p1i.dts |   9 +-
+ sound/arm/pnx4008-dsp.c           | 398 +++++++++++++++++++++++++++++-
+ 2 files changed, 394 insertions(+), 13 deletions(-)
+
+diff --git a/arch/arm/boot/dts/pnx4008-p1i.dts b/arch/arm/boot/dts/pnx4008-p1i.dts
+index db708c107..0f93d0191 100755
+--- a/arch/arm/boot/dts/pnx4008-p1i.dts
++++ b/arch/arm/boot/dts/pnx4008-p1i.dts
+@@ -469,12 +469,17 @@ audio-dsp@400c0000 {
+ 			 * APBP, DSPPLLCTRL to AUDIOPLLCTRL, the PCM halves, and the shared
+ 			 * buffer's parameters (status at 0x440, modules block at 0x800, FEV
+ 			 * at 0x810, filter blocks at 0x85c and 0x99c, message 52's block at
+-			 * 0xba4)
++			 * 0xba4), and the codec registers of the audio block (outputs' mute
++			 * at 0x24 and 0x3c)
+ 			 */
+ 			reg = <0x400c0000 0x40>, <0x400e8060 0x10>, <0x08001000 0x7e0>,
+-			      <0x08000400 0x800>;
++			      <0x08000400 0x800>, <0x400e8000 0x60>;
+ 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
+ 			memory-region = <&dsp_symbian>;
++			/* DAC_ON, SPK_SHDN# (NCP2892 speaker amplifier), SHF_SHDN# (MAX9722) */
++			dac-gpios = <&gpio 5 14 GPIO_ACTIVE_HIGH>;
++			speaker-amp-gpios = <&gpio 5 15 GPIO_ACTIVE_HIGH>;
++			headphone-amp-gpios = <&gpio 5 16 GPIO_ACTIVE_HIGH>;
+ 		};
+ 
+ 		memstick@20080000 {
+diff --git a/sound/arm/pnx4008-dsp.c b/sound/arm/pnx4008-dsp.c
+index 939a3f633..b70128113 100644
+--- a/sound/arm/pnx4008-dsp.c
++++ b/sound/arm/pnx4008-dsp.c
+@@ -44,12 +44,20 @@
+  * After a handover with no stream at all (D:\other\nostream.txt, radio off) the DSP is
+  * idle, and the driver sets up the PCM stream itself: the same switch, after the parameter
+  * block that message 52 checks (Symbian keeps it constant in the shared buffer; without it
+- * the DSP refuses the route's message 52). Symbian's idle output is muted, so the route
+- * (amplifiers, unmute, gains) has to be set from user space as for a route change.
++ * the DSP refuses the route's message 52). If Symbian had put the DSP into standby (its
++ * PLL off), it is restarted first (pnx4008_dsp_restart).
++ *
++ * The driver owns the output stage: DAC_ON and the speaker and headphone amplifiers
++ * (GPIOs), the codec's output mute registers, and the "Playback Route" (Speaker,
++ * Headphones) and "Playback Volume" controls, which switch as Symbian does. After
++ * standby_delay seconds of silence it puts the DSP into standby as Symbian does
++ * (amplifiers off, message 3 (1), PLLs off), so the system can use STOP mode; the next
++ * playback or route change restarts it and restores route and volume.
+  */
+ 
+ #include <linux/delay.h>
+ #include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/hrtimer.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+@@ -60,10 +68,12 @@
+ #include <linux/platform_device.h>
+ #include <linux/pm_qos.h>
+ #include <linux/spinlock.h>
++#include <linux/workqueue.h>
+ #include <sound/control.h>
+ #include <sound/core.h>
+ #include <sound/initval.h>
+ #include <sound/pcm.h>
++#include <sound/tlv.h>
+ 
+ /* Host port (APBP), 16-bit registers */
+ #define APBP_PDATA	0x00	/* DSP memory through the port: data, address */
+@@ -120,6 +130,20 @@
+ #define FILTER_B_SHARED	0x99c
+ #define FILTER_BYTES	0x78
+ 
++/* Standby as Symbian's after silence, and the routes (pnx4008_dsp_standby, _set_route) */
++#define MSG_STATE	3	/* 1: standby (the DSP's PMU shuts its modules down) */
++#define MSG_OUTPUTS	70	/* output types: p0 high byte output 1, p1 high byte output 2 */
++#define MSG_GAIN	31	/* gains from a block in the shared buffer */
++#define GAIN_SHARED	0x81c	/* headphone gain at 0x81c, speaker gain at 0x820 (Q15) */
++#define DSPPLL_RUN	BIT(16)
++#define AUDIOPLL_RUN	BIT(21)
++#define AUDIO_MUTE1	0x24	/* audio block: output 1 (speaker DAC path) mute/level */
++#define AUDIO_MUTE2	0x3c	/* output 2 (headphones) */
++#define AUDIO_MUTED	0x02000000
++#define AUDIO_STARTING	0x00080000
++#define VOLUME_MAX	100
++#define VOLUME_DEFAULT	30	/* Symbian's speaker gain is 0x27dc, 31 % of 0x7fff */
++
+ #define STREAM_SEM	BIT(2)	/* area 0 semaphore, both directions */
+ /* The mapped parameter window: shared buffer + 0x400 to 0xbff */
+ #define PARAMS_OFF	0x400
+@@ -134,6 +158,12 @@
+ #define BLOCK52_OFF	(BLOCK52_SHARED - PARAMS_OFF)
+ #define BLOCK52_WORDS	16
+ #define FEV_SRC_PCM	0x0900	/* halfword 1: ARM_PCM1 (0x0100) + Suzi ADC line in */
++/*
++ * ARM_PCM1 alone, without line in running: the line-in bit starts the DSP's line-in
++ * transfers, which wait for the codec input that only message 80 sets up; the DSP then
++ * stalls after two halves (seen after a restart)
++ */
++#define FEV_SRC_PCM_ONLY	0x0100
+ #define FEV_SRC_LINE_IN	0x0800	/* halfword 1: Suzi ADC line in */
+ #define HALF_BYTES	1008
+ #define POLL_NS		(1 * NSEC_PER_MSEC)
+@@ -174,9 +204,27 @@ struct pnx4008_dsp {
+ 	struct pm_qos_request qos;	/* full bus speed while the PCM device is open */
+ 	phys_addr_t shared;		/* the shared buffer, 0 if the window is not mapped */
+ 	phys_addr_t modules;		/* the reserved area for the modules, 0 if none */
++	void __iomem *audio;		/* audio block codec registers, NULL if not mapped */
++	struct gpio_desc *dac_gpio, *spk_gpio, *hp_gpio;	/* optional */
++	unsigned int route;		/* ROUTE_SPEAKER or ROUTE_HEADPHONES */
++	unsigned int volume;		/* percent of the DSP's full output gain */
++	bool line_in;			/* Symbian's FM radio left line in running */
++	bool can_sleep;			/* the restart works: standby allowed */
++	bool asleep;			/* in standby, restarted on the next open */
++	struct mutex power_lock;	/* standby, wake-up and route changes */
++	struct delayed_work standby_work;
+ };
+ 
+ enum { SOURCE_PCM, SOURCE_FM };
++enum { ROUTE_SPEAKER, ROUTE_HEADPHONES };
++
++static unsigned int standby_delay = 10;
++module_param(standby_delay, uint, 0644);
++MODULE_PARM_DESC(standby_delay,
++		 "seconds of silence before the DSP goes into standby (0: never)");
++
++static int pnx4008_dsp_wake(struct pnx4008_dsp *dsp);
++static void pnx4008_dsp_schedule_standby(struct pnx4008_dsp *dsp);
+ 
+ static u16 apbp_rd(struct pnx4008_dsp *dsp, unsigned int reg)
+ {
+@@ -374,6 +422,13 @@ static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
+ 	struct pnx4008_dsp *dsp = snd_pcm_substream_chip(substream);
+ 	int ret;
+ 
++	cancel_delayed_work_sync(&dsp->standby_work);
++	mutex_lock(&dsp->power_lock);
++	ret = dsp->asleep ? pnx4008_dsp_wake(dsp) : 0;
++	mutex_unlock(&dsp->power_lock);
++	if (ret)
++		return ret;
++
+ 	substream->runtime->hw = pnx4008_dsp_hw;
+ 	dsp->substream = substream;
+ 	/*
+@@ -391,8 +446,11 @@ static int pnx4008_dsp_open(struct snd_pcm_substream *substream)
+ 	if (!ret)
+ 		ret = snd_pcm_hw_constraint_list(substream->runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
+ 						 &pnx4008_dsp_rate_list);
+-	if (ret < 0)
++	if (ret < 0) {
+ 		cpu_latency_qos_remove_request(&dsp->qos);
++		dsp->substream = NULL;
++		pnx4008_dsp_schedule_standby(dsp);
++	}
+ 	return ret;
+ }
+ 
+@@ -403,6 +461,7 @@ static int pnx4008_dsp_close(struct snd_pcm_substream *substream)
+ 	hrtimer_cancel(&dsp->timer);
+ 	dsp->substream = NULL;
+ 	cpu_latency_qos_remove_request(&dsp->qos);
++	pnx4008_dsp_schedule_standby(dsp);
+ 	return 0;
+ }
+ 
+@@ -489,7 +548,8 @@ static int pnx4008_dsp_set_source(struct pnx4008_dsp *dsp, unsigned int source)
+ 		if (!ret)
+ 			ret = pnx4008_dsp_msg(dsp, MSG_SLOT_PATH, 0x0201, 0);
+ 		if (!ret)
+-			ret = pnx4008_dsp_fev_source(dsp, FEV_SRC_PCM);
++			ret = pnx4008_dsp_fev_source(dsp, dsp->line_in ? FEV_SRC_PCM :
++								    FEV_SRC_PCM_ONLY);
+ 		if (!ret)
+ 			apbp_wr(dsp, APBP_PMASK, apbp_rd(dsp, APBP_PMASK) & ~STREAM_SEM);
+ 	} else {
+@@ -663,6 +723,285 @@ static int pnx4008_dsp_idle_setup(struct pnx4008_dsp *dsp)
+ 	return ret;
+ }
+ 
++static void pnx4008_dsp_amps(struct pnx4008_dsp *dsp, int dac, int spk, int hp)
++{
++	if (dsp->dac_gpio)
++		gpiod_direction_output(dsp->dac_gpio, dac);
++	if (dsp->spk_gpio)
++		gpiod_direction_output(dsp->spk_gpio, spk);
++	if (dsp->hp_gpio)
++		gpiod_direction_output(dsp->hp_gpio, hp);
++}
++
++/* The FEV: the source halfword as it is, the route halfwords given; message 6. */
++static int pnx4008_dsp_fev_route(struct pnx4008_dsp *dsp, u16 h2, u16 h3)
++{
++	void __iomem *fev = dsp->params + FEV_OFF;
++
++	writew(0, fev);
++	writew(h2, fev + 4);
++	writew(h3, fev + 6);
++	writew(0, fev + 8);
++	writew(0, fev + 10);
++	return pnx4008_dsp_msg(dsp, MSG_FEV, FEV_WORDS, FEV_SHARED_OFF);
++}
++
++static void pnx4008_dsp_shared32(struct pnx4008_dsp *dsp, unsigned int off, u32 val)
++{
++	writel(val, dsp->params + off - PARAMS_OFF);
++}
++
++/*
++ * The route's output gain (Q15: 0x81c headphones, 0x820 speaker; Symbian uses 0x312c and
++ * 0x27dc) from the volume, applied with message 31.
++ */
++static int pnx4008_dsp_set_gain(struct pnx4008_dsp *dsp)
++{
++	bool hp = dsp->route == ROUTE_HEADPHONES;
++
++	pnx4008_dsp_shared32(dsp, hp ? 0x81c : 0x820, 0x7fff * dsp->volume / VOLUME_MAX);
++	return pnx4008_dsp_msg(dsp, MSG_GAIN, 7, GAIN_SHARED);
++}
++
++/*
++ * Speaker or headphones, the way Symbian switches during playback (regprobe trace
++ * 2026-10-18; it was audio-route.sh): amplifiers off, effect chain off, output muted, the
++ * output's filter coefficients (0x85c block, message 16) and 0x940, message 52, the
++ * outputs (message 70), the FEV of the route, unmuted, the output's gain (message 31),
++ * its amplifier on. DAC_ON stays on throughout.
++ */
++static int pnx4008_dsp_set_route(struct pnx4008_dsp *dsp, unsigned int route)
++{
++	bool hp = route == ROUTE_HEADPHONES;
++	int ret;
++
++	if (!dsp->audio)
++		return -ENODEV;
++	pnx4008_dsp_amps(dsp, 1, 0, 0);
++	ret = pnx4008_dsp_fev_route(dsp, 0, 0);
++	if (ret)
++		return ret;
++	writel(AUDIO_MUTED, dsp->audio + AUDIO_MUTE1);
++	if (hp) {
++		pnx4008_dsp_shared32(dsp, 0x81c, 0);
++		pnx4008_dsp_shared32(dsp, 0x820, 0);
++		pnx4008_dsp_shared32(dsp, 0x84c, 0);
++		pnx4008_dsp_shared32(dsp, 0x850, 0);
++		pnx4008_dsp_shared32(dsp, 0x864, 0x01100110);
++		pnx4008_dsp_shared32(dsp, 0x868, 0x7ffc7ffc);
++		pnx4008_dsp_shared32(dsp, 0x870, 0x0050fffb);
++		pnx4008_dsp_shared32(dsp, 0x874, 0x40270002);
++		pnx4008_dsp_shared32(dsp, 0x940, 0x20200000);
++	} else {
++		writel(AUDIO_MUTED | 0x2020, dsp->audio + AUDIO_MUTE2);
++		pnx4008_dsp_shared32(dsp, 0x81c, 0);
++		pnx4008_dsp_shared32(dsp, 0x820, 0);
++		pnx4008_dsp_shared32(dsp, 0x864, 0x01430143);
++		pnx4008_dsp_shared32(dsp, 0x868, 0x20272027);
++		pnx4008_dsp_shared32(dsp, 0x870, 0x0050fff9);
++		pnx4008_dsp_shared32(dsp, 0x874, 0x7fff0002);
++		pnx4008_dsp_shared32(dsp, 0x940, 0);
++	}
++	ret = pnx4008_dsp_msg(dsp, MSG_BLOCK52, BLOCK52_WORDS, BLOCK52_SHARED);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_FILTER_A, FILTER_BYTES, FILTER_A_SHARED);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_OUTPUTS, hp ? 0x0201 : 0, 0x0101);
++	if (ret)
++		return ret;
++	writel(AUDIO_STARTING, dsp->audio + AUDIO_MUTE1);
++	if (hp) {
++		writel(0x2020, dsp->audio + AUDIO_MUTE2);
++		ret = pnx4008_dsp_fev_route(dsp, 0x0080, 0x48b4);
++	} else {
++		ret = pnx4008_dsp_fev_route(dsp, 0x00ce, 0x8034);
++	}
++	if (ret)
++		return ret;
++	writel(0, dsp->audio + AUDIO_MUTE1);
++	dsp->route = route;
++	ret = pnx4008_dsp_set_gain(dsp);
++	if (!ret)
++		pnx4008_dsp_amps(dsp, 1, !hp, hp);
++	return ret;
++}
++
++/*
++ * Standby as Symbian's after a while of silence: amplifiers and DAC off, the outputs
++ * stopped (message 70 with no output, an empty FEV), message 3 (1), then the DSP's and the
++ * audio PLLs and its clock off. pnx4008-idle only uses STOP mode while the DSP PLL is off.
++ * The next open restarts the DSP (pnx4008_dsp_wake).
++ */
++static void pnx4008_dsp_standby(struct pnx4008_dsp *dsp)
++{
++	void __iomem *fev = dsp->params + FEV_OFF;
++	unsigned int i;
++	int ret;
++
++	pnx4008_dsp_amps(dsp, 0, 0, 0);
++	ret = pnx4008_dsp_msg(dsp, MSG_OUTPUTS, 0, 0x0001);
++	for (i = 0; i < FEV_WORDS; i++)
++		writew(0, fev + 2 * i);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_FEV, FEV_WORDS, FEV_SHARED_OFF);
++	if (!ret)
++		ret = pnx4008_dsp_msg(dsp, MSG_STATE, 1, 0);
++	if (ret) {
++		dev_warn(dsp->dev, "standby failed (%d): DSP left running\n", ret);
++		return;
++	}
++	usleep_range(10000, 20000);
++	writel(readl(dsp->dsppllctrl) & ~DSPPLL_RUN, dsp->dsppllctrl);
++	writel(readl(dsp->dspclkctrl) & ~DSPCLK_ON, dsp->dspclkctrl);
++	writel(readl(dsp->dsppllctrl + AUDIOPLL_OFF) & ~AUDIOPLL_RUN,
++	       dsp->dsppllctrl + AUDIOPLL_OFF);
++	dsp->rate = 0;
++	dsp->asleep = true;
++	dev_dbg(dsp->dev, "standby\n");
++}
++
++/* Restart after standby, the PCM stream and the route as they were. */
++static int pnx4008_dsp_wake(struct pnx4008_dsp *dsp)
++{
++	int ret;
++
++	ret = pnx4008_dsp_restart(dsp);
++	if (!ret)
++		ret = pnx4008_dsp_idle_setup(dsp);
++	if (!ret)
++		ret = pnx4008_dsp_set_route(dsp, dsp->route);
++	if (ret) {
++		dev_err(dsp->dev, "wake-up from standby failed (%d)\n", ret);
++		return ret;
++	}
++	dsp->asleep = false;
++	dev_dbg(dsp->dev, "awake\n");
++	return 0;
++}
++
++static void pnx4008_dsp_standby_work(struct work_struct *work)
++{
++	struct pnx4008_dsp *dsp = container_of(to_delayed_work(work), struct pnx4008_dsp,
++					       standby_work);
++
++	mutex_lock(&dsp->power_lock);
++	/* Not while playing, nor with the FM radio's line in (fm-listen.sh) as the source */
++	if (!dsp->asleep && !READ_ONCE(dsp->substream) && dsp->source == SOURCE_PCM &&
++	    readw(dsp->params + FEV_OFF + 2) != FEV_SRC_LINE_IN)
++		pnx4008_dsp_standby(dsp);
++	mutex_unlock(&dsp->power_lock);
++}
++
++static void pnx4008_dsp_schedule_standby(struct pnx4008_dsp *dsp)
++{
++	unsigned int delay = READ_ONCE(standby_delay);
++
++	if (dsp->can_sleep && delay)
++		mod_delayed_work(system_wq, &dsp->standby_work, msecs_to_jiffies(delay * 1000));
++}
++
++static int pnx4008_dsp_route_info(struct snd_kcontrol *kctl, struct snd_ctl_elem_info *uinfo)
++{
++	static const char *const names[] = { "Speaker", "Headphones" };
++
++	return snd_ctl_enum_info(uinfo, 1, ARRAY_SIZE(names), names);
++}
++
++static int pnx4008_dsp_route_get(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++
++	uctl->value.enumerated.item[0] = READ_ONCE(dsp->route);
++	return 0;
++}
++
++static int pnx4008_dsp_route_put(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++	unsigned int route = uctl->value.enumerated.item[0];
++	int ret = 0;
++
++	if (route > ROUTE_HEADPHONES)
++		return -EINVAL;
++	/*
++	 * A route change wakes a DSP in standby (the wake-up sets the route): the FM radio
++	 * (fm-listen.sh) sets its route first and then talks to the DSP itself
++	 */
++	cancel_delayed_work_sync(&dsp->standby_work);
++	mutex_lock(&dsp->power_lock);
++	if (dsp->asleep) {
++		WRITE_ONCE(dsp->route, route);
++		ret = pnx4008_dsp_wake(dsp);
++	} else {
++		ret = pnx4008_dsp_set_route(dsp, route);
++		if (!ret)
++			WRITE_ONCE(dsp->route, route);
++	}
++	mutex_unlock(&dsp->power_lock);
++	if (!READ_ONCE(dsp->substream))
++		pnx4008_dsp_schedule_standby(dsp);
++	return ret ? ret : 1;
++}
++
++static const struct snd_kcontrol_new pnx4008_dsp_route_ctl = {
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	.name = "Playback Route",
++	.info = pnx4008_dsp_route_info,
++	.get = pnx4008_dsp_route_get,
++	.put = pnx4008_dsp_route_put,
++};
++
++static int pnx4008_dsp_volume_info(struct snd_kcontrol *kctl, struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 1;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = VOLUME_MAX;
++	return 0;
++}
++
++static int pnx4008_dsp_volume_get(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++
++	uctl->value.integer.value[0] = READ_ONCE(dsp->volume);
++	return 0;
++}
++
++static int pnx4008_dsp_volume_put(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *uctl)
++{
++	struct pnx4008_dsp *dsp = snd_kcontrol_chip(kctl);
++	long volume = uctl->value.integer.value[0];
++	int ret = 0;
++
++	if (volume < 0 || volume > VOLUME_MAX)
++		return -EINVAL;
++	mutex_lock(&dsp->power_lock);
++	if (volume == dsp->volume) {
++		mutex_unlock(&dsp->power_lock);
++		return 0;
++	}
++	dsp->volume = volume;
++	/* In standby only remembered: the wake-up's route sets it */
++	if (!dsp->asleep)
++		ret = pnx4008_dsp_set_gain(dsp);
++	mutex_unlock(&dsp->power_lock);
++	return ret ? ret : 1;
++}
++
++/* The gain is linear in amplitude: mute at 0, 0 dB (full gain) at VOLUME_MAX */
++static const DECLARE_TLV_DB_LINEAR(pnx4008_dsp_volume_tlv, TLV_DB_GAIN_MUTE, 0);
++
++static const struct snd_kcontrol_new pnx4008_dsp_volume_ctl = {
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	.name = "Playback Volume",
++	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_TLV_READ,
++	.info = pnx4008_dsp_volume_info,
++	.get = pnx4008_dsp_volume_get,
++	.put = pnx4008_dsp_volume_put,
++	.tlv.p = pnx4008_dsp_volume_tlv,
++};
++
+ static const struct snd_pcm_ops pnx4008_dsp_ops = {
+ 	.open = pnx4008_dsp_open,
+ 	.close = pnx4008_dsp_close,
+@@ -690,6 +1029,9 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	dsp->card = card;
+ 	spin_lock_init(&dsp->lock);
+ 	mutex_init(&dsp->msg_lock);
++	mutex_init(&dsp->power_lock);
++	dsp->volume = VOLUME_DEFAULT;
++	INIT_DELAYED_WORK(&dsp->standby_work, pnx4008_dsp_standby_work);
+ 	/*
+ 	 * Unknown: the handover leaves the stream at 44.1 kHz, or 48 kHz as Symbian's FM radio
+ 	 * runs it, so the first playback always sets the rate.
+@@ -717,8 +1059,25 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 			return PTR_ERR(dsp->params);
+ 		dsp->shared = res->start - PARAMS_OFF;
+ 	}
++	/* Optional: the codec registers and the amplifiers, for routes and standby */
++	if (platform_get_resource(pdev, IORESOURCE_MEM, 4)) {
++		dsp->audio = devm_platform_ioremap_resource(pdev, 4);
++		if (IS_ERR(dsp->audio))
++			return PTR_ERR(dsp->audio);
++	}
++	dsp->dac_gpio = devm_gpiod_get_optional(dev, "dac", GPIOD_ASIS);
++	dsp->spk_gpio = devm_gpiod_get_optional(dev, "speaker-amp", GPIOD_ASIS);
++	dsp->hp_gpio = devm_gpiod_get_optional(dev, "headphone-amp", GPIOD_ASIS);
++	if (IS_ERR(dsp->dac_gpio) || IS_ERR(dsp->spk_gpio) || IS_ERR(dsp->hp_gpio))
++		return dev_err_probe(dev, -EPROBE_DEFER, "amplifier GPIOs\n");
+ 
+-	if (!(apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)) {
++	/*
++	 * PLL off first: a DSP in standby (Symbian's, or ours before a kexec, which leaves
++	 * PMASK as for a stream) is restarted, whatever else the host port shows
++	 */
++	if (dsp->params && !(readl(dsp->dsppllctrl) & DSPPLL_LOCK)) {
++		powered_down = true;	/* restarted once the modules are back */
++	} else if (!(apbp_rd(dsp, APBP_PMASK) & STREAM_SEM)) {
+ 		dev_info(dev, "adopting Symbian's audio stream (PMASK %04x, SEM %04x)\n",
+ 			 apbp_rd(dsp, APBP_PMASK), apbp_rd(dsp, APBP_SEM));
+ 	} else if (!dsp->params) {
+@@ -727,9 +1086,8 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	} else if (readw(dsp->params + STATUS_OFF + STATUS_LINE_IN_RATE) == 8) {
+ 		dev_info(dev, "Symbian's FM radio left line in running: Audio Source FM\n");
+ 		dsp->source = SOURCE_FM;
++		dsp->line_in = true;
+ 		fm_handover = true;
+-	} else if (!(readl(dsp->dsppllctrl) & DSPPLL_LOCK)) {
+-		powered_down = true;	/* restarted once the modules are back */
+ 	} else {
+ 		idle = true;
+ 	}
+@@ -743,19 +1101,26 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 	if (powered_down) {
+ 		ret = pnx4008_dsp_restart(dsp);
+ 		if (ret)
+-			dev_warn(dev, "DSP powered down by Symbian, restart failed (%d): no audio\n",
++			dev_warn(dev, "DSP in standby, restart failed (%d): no audio\n",
+ 				 ret);
+ 		else
+-			dev_info(dev, "DSP powered down by Symbian: restarted\n");
++			dev_info(dev, "DSP in standby (PLL off): restarted\n");
+ 		idle = !ret;
+ 	}
+ 	if (idle) {
+ 		ret = pnx4008_dsp_idle_setup(dsp);
++		if (!ret)
++			ret = pnx4008_dsp_set_route(dsp, ROUTE_SPEAKER);
+ 		if (ret)
+ 			dev_warn(dev, "idle DSP: cannot set up a PCM stream (%d)\n", ret);
+ 		else
+-			dev_info(dev, "idle DSP: PCM stream set up (route it with audio-route.sh)\n");
++			dev_info(dev, "idle DSP: PCM stream set up, route Speaker\n");
+ 	}
++	/*
++	 * Standby after silence needs the restart (the parameter window and the modules) and
++	 * the route (codec registers): not after a FM handover, whose route Symbian set up
++	 */
++	dsp->can_sleep = dsp->shared && dsp->modules && dsp->audio && !fm_handover;
+ 
+ 	strscpy(card->driver, "PNX4008-DSP", sizeof(card->driver));
+ 	strscpy(card->shortname, "PNX4008 DSP", sizeof(card->shortname));
+@@ -775,8 +1140,19 @@ static int pnx4008_dsp_probe(struct platform_device *pdev)
+ 		if (ret)
+ 			return ret;
+ 	}
++	if (dsp->audio) {
++		ret = snd_ctl_add(card, snd_ctl_new1(&pnx4008_dsp_route_ctl, dsp));
++		if (!ret)
++			ret = snd_ctl_add(card, snd_ctl_new1(&pnx4008_dsp_volume_ctl, dsp));
++		if (ret)
++			return ret;
++	}
+ 
+-	return snd_card_register(card);
++	ret = snd_card_register(card);
++	if (ret)
++		return ret;
++	pnx4008_dsp_schedule_standby(dsp);
++	return 0;
+ }
+ 
+ static const struct of_device_id pnx4008_dsp_of_match[] = {
+-- 
+2.53.0
+

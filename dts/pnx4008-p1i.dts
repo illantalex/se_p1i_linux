@@ -469,12 +469,17 @@
 			 * APBP, DSPPLLCTRL to AUDIOPLLCTRL, the PCM halves, and the shared
 			 * buffer's parameters (status at 0x440, modules block at 0x800, FEV
 			 * at 0x810, filter blocks at 0x85c and 0x99c, message 52's block at
-			 * 0xba4)
+			 * 0xba4), and the codec registers of the audio block (outputs' mute
+			 * at 0x24 and 0x3c)
 			 */
 			reg = <0x400c0000 0x40>, <0x400e8060 0x10>, <0x08001000 0x7e0>,
-			      <0x08000400 0x800>;
+			      <0x08000400 0x800>, <0x400e8000 0x60>;
 			/* reloaded with DspCodecModule.bin and DspSrcFilterCoefs.bin */
 			memory-region = <&dsp_symbian>;
+			/* DAC_ON, SPK_SHDN# (NCP2892 speaker amplifier), SHF_SHDN# (MAX9722) */
+			dac-gpios = <&gpio 5 14 GPIO_ACTIVE_HIGH>;
+			speaker-amp-gpios = <&gpio 5 15 GPIO_ACTIVE_HIGH>;
+			headphone-amp-gpios = <&gpio 5 16 GPIO_ACTIVE_HIGH>;
 		};
 
 		memstick@20080000 {
